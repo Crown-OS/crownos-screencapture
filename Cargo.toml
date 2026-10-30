@@ -1,8 +1,8 @@
 [package]
-name = "crownos-screenshot"
+name = "crownos-screencapture"
 version = "0.1.0"
 edition = "2024"
-description = "Screenshot and screen recording tool for CrownOS and other Wayland desktops"
+description = "Screencapture tool for CrownOS and other Wayland desktops"
 
 [lib]
 name = "crownos_screenshot"
@@ -48,13 +48,28 @@ thiserror = { version = "2", optional = true }
 clap = { version = "4.6", features = ["derive"], optional = true }
 serde = { version = "1", features = ["derive"] }
 tracing = { version = "0.1", optional = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+tracing-subscriber = { version = "0.3", features = [
+  "env-filter",
+], optional = true }
 dirs = { version = "6", optional = true }
-chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }
+chrono = { version = "0.4", default-features = false, features = [
+  "clock",
+], optional = true }
 memmap2 = { version = "0.9", optional = true }
-rustix = { version = "1", default-features = false, features = ["std", "fs", "mm", "event", "process", "time"], optional = true }
+rustix = { version = "1", default-features = false, features = [
+  "std",
+  "fs",
+  "mm",
+  "event",
+  "process",
+  "time",
+], optional = true }
 
-crownui = { path = "../crownui/crownui", default-features = false, features = ["wayland", "impeller", "static"], optional = true }
+crownui = { path = "../crownui/crownui", default-features = false, features = [
+  "wayland",
+  "impeller",
+  "static",
+], optional = true }
 crownos-ipc = { path = "../crownos-ipc" }
 crownos-config = { path = "../crownos-config", default-features = false, optional = true }
 crownotify = { path = "../crownotify", default-features = false, optional = true }
@@ -62,16 +77,28 @@ crownos-preview = { path = "../crownos-preview", default-features = false, optio
 
 sctk = { package = "smithay-client-toolkit", version = "0.21", default-features = false, optional = true }
 wayland-client = { version = "0.31", optional = true }
-wayland-protocols = { version = "0.32", features = ["client", "staging"], optional = true }
+wayland-protocols = { version = "0.32", features = [
+  "client",
+  "staging",
+], optional = true }
 gbm = { version = "0.18", default-features = false, optional = true }
 
 png = { version = "0.18", optional = true }
-turbojpeg = { version = "1.5", default-features = false, features = ["pkg-config"], optional = true }
-ffmpeg-next = { version = "9.0.0", default-features = false, features = ["codec", "filter", "format"], optional = true }
+turbojpeg = { version = "1.5", default-features = false, features = [
+  "pkg-config",
+], optional = true }
+ffmpeg-next = { version = "9.0.0", default-features = false, features = [
+  "codec",
+  "filter",
+  "format",
+], optional = true }
 pipewire = { version = "0.10.1", optional = true }
 rtrb = { version = "0.3.5", optional = true }
 signal-hook = { version = "0.3", default-features = false, optional = true }
-zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"], optional = true }
+zbus = { version = "5.19", default-features = false, features = [
+  "async-io",
+  "blocking-api",
+], optional = true }
 
 [profile.release]
 lto = "thin"
