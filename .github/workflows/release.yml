@@ -12,4 +12,6 @@ permissions:
 jobs:
   package:
     uses: Crown-OS/.github/.github/workflows/arch-package.yml@main
+    with:
+      packages: ffmpeg pipewire libjpeg-turbo
     secrets: inherit

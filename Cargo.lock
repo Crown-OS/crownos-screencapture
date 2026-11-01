@@ -564,22 +564,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "crownos-ipc"
-version = "0.1.0"
-source = "git+https://github.com/crown-os/crownos-ipc#2998c7ae137525490cba84ab8d6238f7cb76ed45"
-dependencies = [
- "log",
- "postcard",
- "rustix",
- "serde",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "crownos-preview"
 version = "0.1.0"
 dependencies = [
- "crownos-ipc 0.1.0",
+ "crownos-ipc",
  "serde",
 ]
 
@@ -594,14 +582,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "crownos-screenshot"
+name = "crownos-screencapture"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
  "clap",
  "crownos-config",
- "crownos-ipc 0.1.0",
+ "crownos-ipc",
  "crownos-preview",
  "crownotify",
  "crownui",
@@ -629,7 +617,7 @@ dependencies = [
 name = "crownotify"
 version = "0.1.0"
 dependencies = [
- "crownos-ipc 0.1.0 (git+https://github.com/crown-os/crownos-ipc)",
+ "crownos-ipc",
  "serde",
 ]
 

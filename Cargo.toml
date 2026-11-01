@@ -100,6 +100,9 @@ zbus = { version = "5.19", default-features = false, features = [
   "blocking-api",
 ], optional = true }
 
+[patch."https://github.com/crown-os/crownos-ipc"]
+crownos-ipc = { path = "../crownos-ipc" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
