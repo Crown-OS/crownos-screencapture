@@ -1,5 +1,6 @@
 //! Handing a finished capture to the previewer.
 
+use std::ffi::OsStr;
 use std::path::Path;
 use std::time::Duration;
 
@@ -9,6 +10,8 @@ use thiserror::Error;
 use crate::util::desktop::spawn_detached;
 
 const PREVIEW_BINARY: &str = "crownos-preview";
+/// Captures open with the markup and crop tools ready.
+const EDIT_FLAG: &str = "--edit";
 const REPLY_TIMEOUT: Option<Duration> = Some(Duration::from_secs(2));
 
 #[derive(Debug, Error)]
@@ -40,12 +43,12 @@ impl Previewer for CrownosPreview {
         let mut client = match Client::connect() {
             Ok(client) => client,
             Err(crownos_ipc::Error::ServiceUnavailable { .. }) => {
-                spawn_detached(PREVIEW_BINARY, [path])?;
+                spawn_detached(PREVIEW_BINARY, [OsStr::new(EDIT_FLAG), path.as_os_str()])?;
                 return Ok(());
             }
             Err(error) => return Err(error.into()),
         };
-        let pending = client.open(text.to_owned())?;
+        let pending = client.edit(text.to_owned())?;
         if client.wait(pending, REPLY_TIMEOUT)? {
             Ok(())
         } else {
