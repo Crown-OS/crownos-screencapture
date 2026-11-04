@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Screen Capture
+GenericName=Screenshot Tool
+Comment=Take screenshots and record the screen or your voice
+Exec=crownos-screenshot
+Icon=accessories-screenshot
+Terminal=false
+StartupNotify=false
+StartupWMClass=crownos-screenshot
+Categories=Utility;
+Keywords=screenshot;screen;capture;record;recording;screencast;print;
