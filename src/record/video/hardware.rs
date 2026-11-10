@@ -5,7 +5,8 @@ use std::ptr::{self, NonNull};
 
 use ffmpeg_next::ffi::{
     AVBufferRef, AVHWDeviceType, AVHWFramesContext, AVPixelFormat, av_buffer_ref, av_buffer_unref,
-    av_hwdevice_ctx_create, av_hwframe_ctx_alloc, av_hwframe_ctx_init,
+    av_hwdevice_ctx_create, av_hwdevice_ctx_create_derived, av_hwframe_ctx_alloc,
+    av_hwframe_ctx_create_derived, av_hwframe_ctx_init,
 };
 
 use crate::record::{RecordError, error::check};
@@ -38,6 +39,38 @@ impl HardwareContext {
         };
         check(code, "av_hwdevice_ctx_create")?;
         Self::adopt(device, "av_hwdevice_ctx_create")
+    }
+
+    /// A device of `kind` sharing this device's hardware.
+    pub fn derive(&self, kind: AVHWDeviceType) -> Result<Self, RecordError> {
+        let mut device = ptr::null_mut();
+        // SAFETY: `device` receives a new reference on success; the source reference is valid.
+        let code = unsafe { av_hwdevice_ctx_create_derived(&mut device, kind, self.as_ptr(), 0) };
+        check(code, "av_hwdevice_ctx_create_derived")?;
+        Self::adopt(device, "av_hwdevice_ctx_create_derived")
+    }
+
+    /// A pool of `format` frames on `device` into which this pool's frames map with `flags`.
+    pub fn derive_frames(
+        &self,
+        format: AVPixelFormat,
+        device: &Self,
+        flags: i32,
+    ) -> Result<Self, RecordError> {
+        let mut frames = ptr::null_mut();
+        // SAFETY: `frames` receives a new reference on success; both source references are
+        // valid and only re-referenced by the call.
+        let code = unsafe {
+            av_hwframe_ctx_create_derived(
+                &mut frames,
+                format,
+                device.as_ptr(),
+                self.as_ptr(),
+                flags,
+            )
+        };
+        check(code, "av_hwframe_ctx_create_derived")?;
+        Self::adopt(frames, "av_hwframe_ctx_create_derived")
     }
 
     /// A pool description for frames of `format` backed by `software_format` on this device.
