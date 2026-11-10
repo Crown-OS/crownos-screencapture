@@ -70,7 +70,7 @@ impl VaapiInput {
     /// marked as a `picture`.
     pub fn push(
         &mut self,
-        captured: &CapturedFrame<'_>,
+        captured: &CapturedFrame,
         dmabuf: &DmabufFrame,
         timestamp: i64,
         picture: picture::Type,

@@ -1,14 +1,18 @@
-//! Screen and voice recording: capture → encode → mux, on one thread with lock-free audio.
+//! Screen and voice recording: capture on one thread, encode → mux on another, with lock-free
+//! audio.
 
 pub mod audio;
 mod clock;
 mod control;
+mod encode;
 mod error;
+mod feed;
 mod mux;
 pub mod video;
 
-use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
 use ffmpeg_next::{Packet, codec};
@@ -17,17 +21,17 @@ use self::audio::AudioTrack;
 pub use self::audio::CaptureNode;
 use self::clock::RecordingClock;
 pub use self::control::StopSignal;
+use self::encode::{AUDIO_CADENCE, EncoderEvents, Encoding};
 pub use self::error::RecordError;
+use self::feed::FrameFeed;
 pub use self::mux::Container;
 use self::mux::{Muxer, PendingPackets};
 use self::video::{
-    Crop, KeyframeSchedule, SoftwareBackend, VaapiBackend, VideoBackend, VideoEncoder,
-    VideoSettings, VulkanBackend,
+    Crop, KeyframeSchedule, SoftwareBackend, VaapiBackend, VideoBackend, VideoSettings,
+    VulkanBackend,
 };
 use crate::capture::{CaptureError, CaptureTarget, CursorMode, FrameStream, Region, ScreenCapture};
 
-/// How often sound is mixed and encoded, well inside its mix delay.
-const AUDIO_CADENCE: Duration = Duration::from_millis(20);
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 /// Seekable and crash-recoverable to within this long, however quiet the screen.
 const KEYFRAME_INTERVAL: i64 = 2 * RecordingClock::MICROSECONDS as i64;
@@ -145,27 +149,27 @@ fn record_with(
     let clock = RecordingClock::start();
     let mut keyframes = KeyframeSchedule::new(KEYFRAME_INTERVAL);
     let mut pending = PendingPackets::default();
-    let frame = stream
+    let first = stream
         .next_frame(&[], Some(FIRST_FRAME_TIMEOUT))?
         .ok_or(CaptureError::Failed("no frame arrived"))?;
     let opened = backend
-        .open(&frame, render_node.as_deref(), &settings)
+        .open(&first, render_node.as_deref(), &settings)
         .and_then(|mut encoder| {
-            let timestamp = clock.microseconds_at(frame.presented_at);
+            let timestamp = clock.microseconds_at(first.presented_at);
             encoder.encode(
-                &frame,
+                &first,
                 timestamp,
                 keyframes.picture_at(timestamp),
                 &mut pending,
             )?;
             Ok(encoder)
         });
-    let mut encoder = match opened {
+    drop(first);
+    let encoder = match opened {
         Ok(encoder) => encoder,
         Err(error) => return Ok(Attempt::Unsupported(error)),
     };
-    let audio_offset = clock.elapsed();
-    let mut audio = (!recording.audio.is_empty())
+    let audio = (!recording.audio.is_empty())
         .then(|| AudioTrack::start(&recording.audio))
         .transpose()?;
     let mut muxer = Muxer::create(
@@ -178,49 +182,32 @@ fn record_with(
     )?;
     pending.replay(&mut muxer)?;
     started();
-    let audio_cadence = audio.is_some().then_some(AUDIO_CADENCE);
-    while !stop.is_raised() {
-        match stream.next_frame(&[stop.as_fd()], audio_cadence) {
-            Ok(Some(frame)) => {
-                if settings
-                    .crop
-                    .is_changed_by(frame.damage, frame.pixels.size())
-                {
-                    let timestamp = clock.microseconds_at(frame.presented_at);
-                    encoder.encode(
-                        &frame,
-                        timestamp,
-                        keyframes.picture_at(timestamp),
-                        &mut muxer,
-                    )?;
-                }
-            }
-            Ok(None) => {}
-            Err(CaptureError::Stopped) => break,
-            Err(error) => return Err(error.into()),
+    let encoding = Encoding {
+        encoder,
+        audio,
+        muxer,
+        clock,
+    };
+    let events = EncoderEvents::new()?;
+    let (jobs, queued) = mpsc::sync_channel(stream.capacity());
+    thread::scope(|scope| {
+        let encode_thread = thread::Builder::new()
+            .name("encode".into())
+            .spawn_scoped(scope, || encoding.run(queued, &events))?;
+        let captured = FrameFeed {
+            stop,
+            events: &events,
+            crop: settings.crop,
+            clock,
+            keyframes,
         }
-        if let Some(track) = &mut audio {
-            track.pump(
-                clock.elapsed().saturating_sub(audio_offset),
-                &mut muxer,
-                audio_offset,
-            )?;
-        }
-    }
-    finish(encoder.as_mut(), audio.as_mut(), muxer)?;
+        .run(&mut stream, jobs);
+        let encoded = encode_thread
+            .join()
+            .map_err(|_| RecordError::EncodeThreadPanicked)?;
+        captured.and(encoded)
+    })?;
     Ok(Attempt::Recorded)
-}
-
-fn finish(
-    encoder: &mut dyn VideoEncoder,
-    audio: Option<&mut AudioTrack>,
-    mut muxer: Muxer,
-) -> Result<(), RecordError> {
-    encoder.finish(&mut muxer)?;
-    if let Some(track) = audio {
-        track.finish(&mut muxer)?;
-    }
-    muxer.finish()
 }
 
 fn crop(recording: &ScreenRecording, (buffer_width, buffer_height): (u32, u32)) -> Crop {
@@ -253,7 +240,7 @@ pub fn record_voice(
     started();
     while !stop.is_raised() {
         std::thread::sleep(AUDIO_CADENCE);
-        track.pump(clock.elapsed(), &mut muxer, Duration::ZERO)?;
+        track.pump(clock.elapsed(), &mut muxer)?;
     }
     track.finish(&mut muxer)?;
     muxer.finish()

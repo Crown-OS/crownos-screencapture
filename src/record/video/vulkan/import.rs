@@ -1,3 +1,5 @@
+use std::sync::Once;
+
 use ffmpeg_next::ffi::{AV_HWFRAME_MAP_READ, AVHWDeviceType, AVPixelFormat};
 use ffmpeg_next::{frame, picture};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -16,6 +18,7 @@ const WRITER_TIMEOUT: Timespec = Timespec {
     tv_sec: 0,
     tv_nsec: 100_000_000,
 };
+static WRITER_TIMED_OUT: Once = Once::new();
 
 /// The Vulkan device on the GPU behind `drm`, or the default one when it cannot be derived.
 pub(super) fn vulkan_device(drm: &HardwareContext) -> Result<HardwareContext, RecordError> {
@@ -91,7 +94,7 @@ impl VulkanInput {
     /// marked as a `picture`.
     pub fn push(
         &mut self,
-        captured: &CapturedFrame<'_>,
+        captured: &CapturedFrame,
         dmabuf: &DmabufFrame,
         timestamp: i64,
         picture: picture::Type,
@@ -127,12 +130,24 @@ fn red_first_format(format: PixelFormat) -> Option<AVPixelFormat> {
     }
 }
 
-/// Waits until the compositor has finished rendering into `dmabuf`. FFmpeg only waits on the
-/// buffer's implicit fence when it maps it, and each mapping serves many frames.
+/// Waits until the compositor has finished rendering into `dmabuf`, for at most
+/// [`WRITER_TIMEOUT`]. FFmpeg only waits on the buffer's implicit fence when it maps it, and each
+/// mapping serves many frames.
 fn wait_for_writer(dmabuf: &DmabufFrame) -> Result<(), RecordError> {
     let mut fds = [PollFd::new(&dmabuf.fd, PollFlags::IN)];
-    poll(&mut fds, Some(&WRITER_TIMEOUT)).map_err(std::io::Error::from)?;
-    Ok(())
+    loop {
+        match poll(&mut fds, Some(&WRITER_TIMEOUT)) {
+            Ok(0) => {
+                WRITER_TIMED_OUT.call_once(|| {
+                    tracing::warn!("the compositor's rendering is still pending; encoding anyway");
+                });
+                return Ok(());
+            }
+            Ok(_) => return Ok(()),
+            Err(rustix::io::Errno::INTR) => {}
+            Err(error) => return Err(std::io::Error::from(error).into()),
+        }
+    }
 }
 
 #[cfg(test)]

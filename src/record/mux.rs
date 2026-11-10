@@ -67,7 +67,8 @@ pub struct Muxer {
     audio: Option<Track>,
 }
 
-// SAFETY: the output context is owned here and used from one thread at a time.
+// SAFETY: the output context is owned here; it is created on the capture thread and then
+// moved to the encode thread, so one thread at a time uses it.
 unsafe impl Send for Muxer {}
 
 impl Muxer {

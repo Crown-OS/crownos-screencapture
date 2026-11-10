@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::sync::Arc;
 use std::time::Duration;
 
 use memmap2::Mmap;
@@ -73,13 +74,21 @@ pub struct ShmFrame {
 }
 
 impl ShmFrame {
+    /// Bytes past the last pixel that vectorised readers such as swscale may touch; allocated
+    /// frames carry at least this many.
+    pub const READ_PADDING: usize = 64;
+
     pub fn allocate(width: u32, height: u32, format: PixelFormat) -> io::Result<Self> {
         let stride = width * BYTES_PER_PIXEL;
         let fd = memfd_create("crownos-screenshot", MemfdFlags::CLOEXEC)?;
-        ftruncate(&fd, u64::from(stride) * u64::from(height))?;
+        ftruncate(
+            &fd,
+            u64::from(stride) * u64::from(height) + Self::READ_PADDING as u64,
+        )?;
         Self::from_fd(fd, width, height, stride, format)
     }
 
+    /// Maps the whole of `fd`, which must hold at least `stride * height` bytes.
     pub fn from_fd(
         fd: OwnedFd,
         width: u32,
@@ -88,10 +97,13 @@ impl ShmFrame {
         format: PixelFormat,
     ) -> io::Result<Self> {
         let file = File::from(fd);
-        let length =
-            usize::try_from(u64::from(stride) * u64::from(height)).map_err(io::Error::other)?;
-        // SAFETY: the memfd is private to this process tree and only written by the compositor
-        // before the frame is reported ready.
+        let length = usize::try_from(file.metadata()?.len()).map_err(io::Error::other)?;
+        if (length as u64) < u64::from(stride) * u64::from(height) {
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
+        }
+        // SAFETY: the memfd is private to this process tree and nothing writes into it while it
+        // is read: the compositor fills a frame before reporting it ready, and a stream only asks
+        // it to refill a slot once no handle to the slot's pixels is left outside the ring.
         let memory = unsafe { memmap2::MmapOptions::new().len(length).map(&file)? };
         Ok(Self {
             file,
@@ -107,9 +119,14 @@ impl ShmFrame {
         self.memory.len()
     }
 
-    /// The whole mapping, `stride * height` bytes.
+    /// The whole mapping: `stride * height` bytes of pixels and any padding after them.
     pub fn bytes(&self) -> &[u8] {
         &self.memory
+    }
+
+    /// Whether the mapping has [`Self::READ_PADDING`] bytes after the last row.
+    pub fn has_read_padding(&self) -> bool {
+        self.memory.len() >= self.stride as usize * self.height as usize + Self::READ_PADDING
     }
 
     /// The pixel bytes from the first pixel of `rect` to the last, rows `stride` apart.
@@ -180,13 +197,14 @@ pub struct DmabufFrame {
     pub planes: Vec<PlaneLayout>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum FramePixels<'frame> {
-    Memory(&'frame ShmFrame),
-    Gpu(&'frame DmabufFrame),
+/// The pixels of a captured frame, shared with the ring slot they live in.
+#[derive(Debug)]
+pub enum FramePixels {
+    Memory(Arc<ShmFrame>),
+    Gpu(Arc<DmabufFrame>),
 }
 
-impl FramePixels<'_> {
+impl FramePixels {
     pub fn size(&self) -> (u32, u32) {
         match self {
             Self::Memory(frame) => (frame.width, frame.height),
@@ -195,10 +213,11 @@ impl FramePixels<'_> {
     }
 }
 
-/// One frame of a capture stream.
-#[derive(Debug, Clone, Copy)]
-pub struct CapturedFrame<'frame> {
-    pub pixels: FramePixels<'frame>,
+/// One frame of a capture stream. The stream does not let the compositor write into the
+/// frame's slot again until every handle to its pixels is dropped.
+#[derive(Debug)]
+pub struct CapturedFrame {
+    pub pixels: FramePixels,
     /// The ring slot holding the frame, stable for the life of the stream.
     pub slot: usize,
     /// Counts the ring allocations of the stream, so state cached per slot knows when its buffer changed.
@@ -206,7 +225,7 @@ pub struct CapturedFrame<'frame> {
     /// When the compositor presented the frame, on `CLOCK_MONOTONIC`.
     pub presented_at: Duration,
     /// The parts of the buffer that changed since the previous frame; empty when unknown.
-    pub damage: &'frame [PixelRect],
+    pub damage: Vec<PixelRect>,
 }
 
 /// Which kind of buffer a stream should capture into.
@@ -214,4 +233,25 @@ pub struct CapturedFrame<'frame> {
 pub enum BufferKind {
     Memory,
     Gpu,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocated_frames_carry_read_padding() -> io::Result<()> {
+        let frame = ShmFrame::allocate(3, 2, PixelFormat::Bgrx)?;
+        assert!(frame.has_read_padding());
+        assert_eq!(frame.rows(frame.full_rect()).count(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn refuses_files_shorter_than_their_pixels() -> io::Result<()> {
+        let fd = memfd_create("short-frame", MemfdFlags::CLOEXEC)?;
+        ftruncate(&fd, 8)?;
+        assert!(ShmFrame::from_fd(fd, 2, 2, 8, PixelFormat::Bgrx).is_err());
+        Ok(())
+    }
 }

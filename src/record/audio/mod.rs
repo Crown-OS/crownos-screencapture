@@ -68,18 +68,17 @@ impl AudioTrack {
 
     /// Encodes every window of the recording that ended at least [`MIX_DELAY`] ago.
     ///
-    /// `elapsed + offset` must be the time since the recording started; the first call anchors
-    /// the track there, and sound is placed by capture time, so how the two are split is unused.
+    /// `elapsed` must be the time since the recording started; only the first call's value is
+    /// used, to anchor the track.
     pub fn pump(
         &mut self,
         elapsed: Duration,
         sink: &mut dyn PacketSink,
-        offset: Duration,
     ) -> Result<(), RecordError> {
         let now_ns = nanoseconds(monotonic_now());
         let origin_ns = *self
             .origin_ns
-            .get_or_insert_with(|| now_ns - nanoseconds(elapsed + offset));
+            .get_or_insert_with(|| now_ns - nanoseconds(elapsed));
         self.encode_until(origin_ns, now_ns - nanoseconds(MIX_DELAY), sink)
     }
 
@@ -100,9 +99,10 @@ impl AudioTrack {
         let due = frames_between(origin_ns, until_ns);
         let frame = self.encoder.frame_samples() as i64;
         while self.encoded + frame <= due {
-            self.mixer.mix(origin_ns, self.encoded, &mut self.mixed);
-            self.encoder.encode(&self.mixed, self.encoded, sink)?;
+            let position = self.encoded;
             self.encoded += frame;
+            self.mixer.mix(origin_ns, position, &mut self.mixed);
+            self.encoder.encode(&self.mixed, position, sink)?;
         }
         Ok(())
     }

@@ -68,12 +68,16 @@ pub trait ScreenCapture {
 /// Frames arriving from a running capture.
 pub trait FrameStream {
     /// Waits for the next frame until one of `wakers` turns readable or `timeout`, when given,
-    /// passes; `None` when either came first.
+    /// passes; `None` when either came first. While every slot is held by frames handed out
+    /// earlier, no frame is requested until one is dropped.
     fn next_frame(
         &mut self,
         wakers: &[BorrowedFd<'_>],
         timeout: Option<Duration>,
-    ) -> Result<Option<CapturedFrame<'_>>, CaptureError>;
+    ) -> Result<Option<CapturedFrame>, CaptureError>;
+
+    /// How many frames the stream can have handed out at once.
+    fn capacity(&self) -> usize;
 
     /// Asks for frames no more often than every `interval`, so the compositor renders no frame
     /// that would be dropped.
