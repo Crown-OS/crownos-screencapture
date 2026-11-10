@@ -9,6 +9,7 @@ mod pacer;
 mod target;
 mod wayland;
 
+use std::os::fd::BorrowedFd;
 use std::path::Path;
 use std::time::Duration;
 
@@ -66,8 +67,13 @@ pub trait ScreenCapture {
 
 /// Frames arriving from a running capture.
 pub trait FrameStream {
-    /// Waits up to `timeout` for the next frame; `None` when nothing changed on screen.
-    fn next_frame(&mut self, timeout: Duration) -> Result<Option<CapturedFrame<'_>>, CaptureError>;
+    /// Waits for the next frame until one of `wakers` turns readable or `timeout`, when given,
+    /// passes; `None` when either came first.
+    fn next_frame(
+        &mut self,
+        wakers: &[BorrowedFd<'_>],
+        timeout: Option<Duration>,
+    ) -> Result<Option<CapturedFrame<'_>>, CaptureError>;
 
     /// Asks for frames no more often than every `interval`, so the compositor renders no frame
     /// that would be dropped.

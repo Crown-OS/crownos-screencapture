@@ -7,6 +7,7 @@ mod error;
 mod mux;
 pub mod video;
 
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -25,8 +26,8 @@ use self::video::{
 };
 use crate::capture::{CaptureError, CaptureTarget, CursorMode, FrameStream, Region, ScreenCapture};
 
-/// How long one pass of the recording loop waits for a frame before servicing audio.
-const POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// How often sound is mixed and encoded, well inside its mix delay.
+const AUDIO_CADENCE: Duration = Duration::from_millis(20);
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 /// Seekable and crash-recoverable to within this long, however quiet the screen.
 const KEYFRAME_INTERVAL: i64 = 2 * RecordingClock::MICROSECONDS as i64;
@@ -144,29 +145,24 @@ fn record_with(
     let clock = RecordingClock::start();
     let mut keyframes = KeyframeSchedule::new(KEYFRAME_INTERVAL);
     let mut pending = PendingPackets::default();
-    let mut encoder = loop {
-        if clock.elapsed() > FIRST_FRAME_TIMEOUT {
-            return Err(CaptureError::Failed("no frame arrived").into());
-        }
-        let Some(frame) = stream.next_frame(POLL_INTERVAL)? else {
-            continue;
-        };
-        let opened = backend
-            .open(&frame, render_node.as_deref(), &settings)
-            .and_then(|mut encoder| {
-                let timestamp = clock.microseconds_at(frame.presented_at);
-                encoder.encode(
-                    &frame,
-                    timestamp,
-                    keyframes.picture_at(timestamp),
-                    &mut pending,
-                )?;
-                Ok(encoder)
-            });
-        match opened {
-            Ok(encoder) => break encoder,
-            Err(error) => return Ok(Attempt::Unsupported(error)),
-        }
+    let frame = stream
+        .next_frame(&[], Some(FIRST_FRAME_TIMEOUT))?
+        .ok_or(CaptureError::Failed("no frame arrived"))?;
+    let opened = backend
+        .open(&frame, render_node.as_deref(), &settings)
+        .and_then(|mut encoder| {
+            let timestamp = clock.microseconds_at(frame.presented_at);
+            encoder.encode(
+                &frame,
+                timestamp,
+                keyframes.picture_at(timestamp),
+                &mut pending,
+            )?;
+            Ok(encoder)
+        });
+    let mut encoder = match opened {
+        Ok(encoder) => encoder,
+        Err(error) => return Ok(Attempt::Unsupported(error)),
     };
     let audio_offset = clock.elapsed();
     let mut audio = (!recording.audio.is_empty())
@@ -182,8 +178,9 @@ fn record_with(
     )?;
     pending.replay(&mut muxer)?;
     started();
+    let audio_cadence = audio.is_some().then_some(AUDIO_CADENCE);
     while !stop.is_raised() {
-        match stream.next_frame(POLL_INTERVAL) {
+        match stream.next_frame(&[stop.as_fd()], audio_cadence) {
             Ok(Some(frame)) => {
                 if settings
                     .crop
@@ -255,7 +252,7 @@ pub fn record_voice(
     let clock = RecordingClock::start();
     started();
     while !stop.is_raised() {
-        std::thread::sleep(POLL_INTERVAL * 2);
+        std::thread::sleep(AUDIO_CADENCE);
         track.pump(clock.elapsed(), &mut muxer, Duration::ZERO)?;
     }
     track.finish(&mut muxer)?;

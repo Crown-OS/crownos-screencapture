@@ -1,4 +1,4 @@
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::path::Path;
 use std::time::Duration;
 
@@ -185,79 +185,82 @@ impl<'capture> WaylandStream<'capture> {
     }
 
     fn submit_if_due(&mut self) {
-        if self.pacer.until_due(monotonic_now()).is_zero() {
+        if self.in_flight.is_none() && self.pacer.until_due(monotonic_now()).is_zero() {
             self.submit(self.next_slot);
         }
     }
 
-    /// Services events until the next request is due, for at most `timeout`, then sends it if it is.
-    fn await_due(&mut self, timeout: Duration) -> Result<(), CaptureError> {
-        let wait = self.pacer.until_due(monotonic_now());
-        if !wait.is_zero() {
-            self.capture.dispatch_timeout(wait.min(timeout))?;
-        }
-        if matches!(self.capture.state.session, SessionStatus::Stopped) {
-            return Err(CaptureError::Stopped);
-        }
-        self.submit_if_due();
-        Ok(())
+    /// The slot and outcome of the request in flight, once the compositor has answered it.
+    fn take_answer(&mut self) -> Option<(usize, FrameStatus)> {
+        let (frame, slot) = self.in_flight.as_ref()?;
+        let status = self.capture.take_frame_status(frame)?;
+        let slot = *slot;
+        frame.destroy();
+        self.in_flight = None;
+        Some((slot, status))
     }
 
     fn renegotiate(&mut self) -> Result<(), CaptureError> {
         let constraints = self.capture.await_constraints()?;
         self.allocate_ring(&constraints)?;
-        self.submit(0);
+        self.next_slot = 0;
         Ok(())
     }
 }
 
 impl FrameStream for WaylandStream<'_> {
-    fn next_frame(&mut self, timeout: Duration) -> Result<Option<CapturedFrame<'_>>, CaptureError> {
-        let deadline = monotonic_now() + timeout;
-        if self.in_flight.is_none() {
-            self.await_due(timeout)?;
-        }
-        let Some((frame, slot)) = self.in_flight.take() else {
-            return Ok(None);
-        };
-        let status = match self.capture.take_frame_status(&frame) {
-            Some(status) => status,
-            None => {
-                self.capture
-                    .dispatch_timeout(deadline.saturating_sub(monotonic_now()))?;
-                match self.capture.take_frame_status(&frame) {
-                    Some(status) => status,
-                    None => {
-                        self.in_flight = Some((frame, slot));
-                        return Ok(None);
-                    }
-                }
-            }
-        };
-        frame.destroy();
-        match status {
-            FrameStatus::Ready {
-                presented_at,
-                damage,
-            } => {
-                self.pacer.mark(presented_at);
-                self.damage = damage;
-                self.next_slot = (slot + 1) % self.ring.len();
-                self.submit_if_due();
-                Ok(Some(CapturedFrame {
-                    pixels: self.ring[slot].frame_pixels(),
+    fn next_frame(
+        &mut self,
+        wakers: &[BorrowedFd<'_>],
+        timeout: Option<Duration>,
+    ) -> Result<Option<CapturedFrame<'_>>, CaptureError> {
+        let deadline = timeout.map(|timeout| monotonic_now() + timeout);
+        loop {
+            self.submit_if_due();
+            match self.take_answer() {
+                Some((
                     slot,
-                    generation: self.generation,
-                    presented_at,
-                    damage: &self.damage,
-                }))
+                    FrameStatus::Ready {
+                        presented_at,
+                        damage,
+                    },
+                )) => {
+                    self.pacer.mark(presented_at);
+                    self.damage = damage;
+                    self.next_slot = (slot + 1) % self.ring.len();
+                    self.submit_if_due();
+                    return Ok(Some(CapturedFrame {
+                        pixels: self.ring[slot].frame_pixels(),
+                        slot,
+                        generation: self.generation,
+                        presented_at,
+                        damage: &self.damage,
+                    }));
+                }
+                Some((_, FrameStatus::Failed(FailureKind::BufferConstraints))) => {
+                    self.renegotiate()?;
+                    continue;
+                }
+                Some((_, FrameStatus::Failed(FailureKind::Stopped))) => {
+                    return Err(CaptureError::Stopped);
+                }
+                Some((_, FrameStatus::Failed(FailureKind::Unknown))) => {
+                    return Err(CaptureError::Failed("compositor error"));
+                }
+                None => {}
             }
-            FrameStatus::Failed(FailureKind::BufferConstraints) => {
-                self.renegotiate().map(|()| None)
+            if matches!(self.capture.state.session, SessionStatus::Stopped) {
+                return Err(CaptureError::Stopped);
             }
-            FrameStatus::Failed(FailureKind::Stopped) => Err(CaptureError::Stopped),
-            FrameStatus::Failed(FailureKind::Unknown) => {
-                Err(CaptureError::Failed("compositor error"))
+            let now = monotonic_now();
+            let remaining = deadline.map(|deadline| deadline.saturating_sub(now));
+            if remaining.is_some_and(|remaining| remaining.is_zero()) {
+                return Ok(None);
+            }
+            let until_due = self.in_flight.is_none().then(|| self.pacer.until_due(now));
+            let wait = remaining.into_iter().chain(until_due).min();
+            if self.capture.dispatch_until(wakers, wait)? {
+                return Ok(None);
             }
         }
     }

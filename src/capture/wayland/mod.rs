@@ -4,7 +4,7 @@ mod session;
 mod state;
 mod stream;
 
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::time::Duration;
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -151,28 +151,45 @@ impl WaylandCapture {
 
     /// Reads and dispatches events, waiting at most `timeout` for the socket to become readable.
     fn dispatch_timeout(&mut self, timeout: Duration) -> Result<(), CaptureError> {
+        self.dispatch_until(&[], Some(timeout)).map(drop)
+    }
+
+    /// Reads and dispatches events, waiting until the socket or one of `wakers` turns readable,
+    /// or `timeout` passes when there is one. Returns whether a waker is readable.
+    fn dispatch_until(
+        &mut self,
+        wakers: &[BorrowedFd<'_>],
+        timeout: Option<Duration>,
+    ) -> Result<bool, CaptureError> {
         self.connection.flush()?;
+        let mut woken = false;
         if let Some(guard) = self.queue.prepare_read() {
             let connection_fd = guard.connection_fd();
-            let mut fds = [PollFd::new(&connection_fd, PollFlags::IN)];
-            let timeout = Timespec::try_from(timeout).unwrap_or(Timespec {
-                tv_sec: 1,
-                tv_nsec: 0,
-            });
-            let readiness = poll(&mut fds, Some(&timeout));
-            match readiness {
-                Ok(0) | Err(rustix::io::Errno::INTR) => drop(guard),
-                Ok(_) => match guard.read() {
-                    Ok(_) => {}
-                    Err(wayland_client::backend::WaylandError::Io(error))
-                        if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(error) => return Err(error.into()),
-                },
+            let mut fds: Vec<_> = std::iter::once(connection_fd)
+                .chain(wakers.iter().copied())
+                .map(|fd| PollFd::from_borrowed_fd(fd, PollFlags::IN))
+                .collect();
+            let timeout = timeout.and_then(|timeout| Timespec::try_from(timeout).ok());
+            match poll(&mut fds, timeout.as_ref()) {
+                Ok(_) => {
+                    woken = fds[1..].iter().any(|fd| !fd.revents().is_empty());
+                    if fds[0].revents().is_empty() {
+                        drop(guard);
+                    } else {
+                        match guard.read() {
+                            Ok(_) => {}
+                            Err(wayland_client::backend::WaylandError::Io(error))
+                                if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                }
+                Err(rustix::io::Errno::INTR) => drop(guard),
                 Err(error) => return Err(CaptureError::Io(error.into())),
             }
         }
         self.queue.dispatch_pending(&mut self.state)?;
-        Ok(())
+        Ok(woken)
     }
 }
 

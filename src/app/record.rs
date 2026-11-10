@@ -133,7 +133,7 @@ fn destination(
 }
 
 fn listen_for_stop() -> Result<StopSignal> {
-    let stop = StopSignal::default();
+    let stop = StopSignal::new()?;
     stop.on_termination()?;
     stop.serve_stop_requests()?;
     Ok(stop)
