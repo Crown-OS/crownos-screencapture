@@ -19,12 +19,17 @@ pub use self::control::StopSignal;
 pub use self::error::RecordError;
 pub use self::mux::Container;
 use self::mux::{Muxer, PendingPackets};
-use self::video::{Crop, SoftwareBackend, VaapiBackend, VideoBackend, VideoEncoder, VideoSettings};
+use self::video::{
+    Crop, KeyframeSchedule, SoftwareBackend, VaapiBackend, VideoBackend, VideoEncoder,
+    VideoSettings,
+};
 use crate::capture::{CaptureError, CaptureTarget, CursorMode, FrameStream, Region, ScreenCapture};
 
 /// How long one pass of the recording loop waits for a frame before servicing audio.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+/// Seekable and crash-recoverable to within this long, however quiet the screen.
+const KEYFRAME_INTERVAL: i64 = 2 * RecordingClock::MICROSECONDS as i64;
 
 /// An encoder whose stream settings the muxer copies.
 pub trait EncodedStream {
@@ -111,6 +116,7 @@ fn record_with(
         ..recording.video
     };
     let clock = RecordingClock::start();
+    let mut keyframes = KeyframeSchedule::new(KEYFRAME_INTERVAL);
     let mut pending = PendingPackets::default();
     let mut encoder = loop {
         if clock.elapsed() > FIRST_FRAME_TIMEOUT {
@@ -122,9 +128,11 @@ fn record_with(
         let opened = backend
             .open(&frame, render_node.as_deref(), &settings)
             .and_then(|mut encoder| {
+                let timestamp = clock.microseconds_at(frame.presented_at);
                 encoder.encode(
                     &frame,
-                    clock.microseconds_at(frame.presented_at),
+                    timestamp,
+                    keyframes.picture_at(timestamp),
                     &mut pending,
                 )?;
                 Ok(encoder)
@@ -156,7 +164,12 @@ fn record_with(
                     .is_changed_by(frame.damage, frame.pixels.size())
                 {
                     let timestamp = clock.microseconds_at(frame.presented_at);
-                    encoder.encode(&frame, timestamp, &mut muxer)?;
+                    encoder.encode(
+                        &frame,
+                        timestamp,
+                        keyframes.picture_at(timestamp),
+                        &mut muxer,
+                    )?;
                 }
             }
             Ok(None) => {}

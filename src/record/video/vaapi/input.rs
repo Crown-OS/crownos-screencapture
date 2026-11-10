@@ -1,5 +1,5 @@
 use ffmpeg_next::ffi::{AV_HWFRAME_MAP_DIRECT, AV_HWFRAME_MAP_READ, AVPixelFormat, av_hwframe_map};
-use ffmpeg_next::frame;
+use ffmpeg_next::{frame, picture};
 
 use super::super::Crop;
 use super::super::filter::FilterChain;
@@ -67,12 +67,14 @@ impl VaapiInput {
         (self.width, self.height, self.fourcc) == (frame.width, frame.height, frame.fourcc)
     }
 
-    /// Feeds the VA-API surface of `captured`'s slot, stamped `timestamp`, into the graph.
+    /// Feeds the VA-API surface of `captured`'s slot into the graph, stamped `timestamp` and
+    /// marked as a `picture`.
     pub fn push(
         &mut self,
         captured: &CapturedFrame<'_>,
         dmabuf: &DmabufFrame,
         timestamp: i64,
+        picture: picture::Type,
     ) -> Result<(), RecordError> {
         let surface =
             self.surfaces
@@ -80,7 +82,10 @@ impl VaapiInput {
                     map_surface(dmabuf, &self.drm_frames, &self.vaapi_frames, self.crop)
                 })?;
         surface.set_pts(Some(timestamp));
-        self.filters.push_reference(surface)
+        surface.set_kind(picture);
+        let pushed = self.filters.push_reference(surface);
+        surface.set_kind(picture::Type::None);
+        pushed
     }
 }
 

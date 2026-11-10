@@ -5,7 +5,7 @@ use std::path::Path;
 use std::thread;
 
 use crownos_config::schema::VideoCodec;
-use ffmpeg_next::{Dictionary, encoder, format, frame};
+use ffmpeg_next::{Dictionary, encoder, format, frame, picture};
 
 use self::shm_input::borrow_pixels;
 use super::filter::FilterChain;
@@ -147,6 +147,7 @@ impl VideoEncoder for SoftwareEncoder {
         &mut self,
         frame: &CapturedFrame<'_>,
         timestamp: i64,
+        picture: picture::Type,
         sink: &mut dyn PacketSink,
     ) -> Result<(), RecordError> {
         let FramePixels::Memory(shm) = frame.pixels else {
@@ -163,6 +164,7 @@ impl VideoEncoder for SoftwareEncoder {
         // runs a no-op free that never touches the mapping.
         let mut pixels = unsafe { borrow_pixels(shm, self.input.format)? };
         pixels.set_pts(Some(timestamp));
+        pixels.set_kind(picture);
         self.input.filters.push(&pixels)?;
         while self.input.filters.pull(&mut self.converted)? {
             self.encoder.send_frame(&self.converted)?;
