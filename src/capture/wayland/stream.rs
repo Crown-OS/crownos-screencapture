@@ -1,5 +1,6 @@
 use std::os::fd::{AsFd, BorrowedFd};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gbm::BufferObject;
@@ -16,19 +17,21 @@ use super::session::{Constraints, FailureKind, FrameStatus, SessionStatus};
 use super::state::Silent;
 use crate::capture::{
     BufferKind, CaptureError, CaptureTarget, CapturedFrame, CursorMode, DmabufFrame, FramePacer,
-    FramePixels, FrameStream, PixelFormat, PixelRect, ShmFrame, monotonic_now,
+    FramePixels, FrameStream, PixelFormat, ShmFrame, monotonic_now,
 };
 
-/// Enough buffers that the compositor never renders into one the encoder still reads.
+/// Enough buffers that the compositor keeps rendering while the encoder holds a few frames.
 const RING_SIZE: usize = 4;
 
+/// A slot's pixel memory, shared with the frames handed out from it; the Wayland objects and
+/// the GBM buffer stay with the slot on the capture thread.
 enum SlotPixels {
     Memory {
-        frame: ShmFrame,
+        frame: Arc<ShmFrame>,
         pool: WlShmPool,
     },
     Gpu {
-        frame: DmabufFrame,
+        frame: Arc<DmabufFrame>,
         _buffer_object: BufferObject<()>,
     },
 }
@@ -39,10 +42,20 @@ struct Slot {
 }
 
 impl Slot {
-    fn frame_pixels(&self) -> FramePixels<'_> {
+    fn frame_pixels(&self) -> FramePixels {
         match &self.pixels {
-            SlotPixels::Memory { frame, .. } => FramePixels::Memory(frame),
-            SlotPixels::Gpu { frame, .. } => FramePixels::Gpu(frame),
+            SlotPixels::Memory { frame, .. } => FramePixels::Memory(Arc::clone(frame)),
+            SlotPixels::Gpu { frame, .. } => FramePixels::Gpu(Arc::clone(frame)),
+        }
+    }
+
+    /// Whether every frame handed out from this slot has been dropped, so the compositor may
+    /// overwrite it. Unique ownership is checked with acquire ordering, so the readers' last
+    /// accesses happen before the slot is attached again.
+    fn is_released(&mut self) -> bool {
+        match &mut self.pixels {
+            SlotPixels::Memory { frame, .. } => Arc::get_mut(frame).is_some(),
+            SlotPixels::Gpu { frame, .. } => Arc::get_mut(frame).is_some(),
         }
     }
 }
@@ -67,7 +80,6 @@ pub struct WaylandStream<'capture> {
     in_flight: Option<(ExtImageCopyCaptureFrameV1, usize)>,
     next_slot: usize,
     pacer: FramePacer,
-    damage: Vec<PixelRect>,
     size: (u32, u32),
     generation: u64,
 }
@@ -91,7 +103,6 @@ impl<'capture> WaylandStream<'capture> {
             in_flight: None,
             next_slot: 0,
             pacer: FramePacer::default(),
-            damage: Vec::new(),
             size: (0, 0),
             generation: 0,
         };
@@ -121,7 +132,10 @@ impl<'capture> WaylandStream<'capture> {
         let frame = ShmFrame::allocate(constraints.width, constraints.height, format)?;
         let (pool, buffer) = self.capture.shm_buffer(&frame);
         Ok(Slot {
-            pixels: SlotPixels::Memory { frame, pool },
+            pixels: SlotPixels::Memory {
+                frame: Arc::new(frame),
+                pool,
+            },
             buffer,
         })
     }
@@ -170,7 +184,7 @@ impl<'capture> WaylandStream<'capture> {
         params.destroy();
         Ok(Slot {
             pixels: SlotPixels::Gpu {
-                frame,
+                frame: Arc::new(frame),
                 _buffer_object: buffer_object,
             },
             buffer,
@@ -184,10 +198,19 @@ impl<'capture> WaylandStream<'capture> {
         self.in_flight = Some((frame, slot));
     }
 
-    fn submit_if_due(&mut self) {
-        if self.in_flight.is_none() && self.pacer.until_due(monotonic_now()).is_zero() {
-            self.submit(self.next_slot);
+    /// Sends the next request once it is due and a slot is released. Otherwise returns how long
+    /// until it is due, or `None` while a request is in flight or every slot is still held.
+    fn submit_when_due(&mut self) -> Option<Duration> {
+        if self.in_flight.is_some() {
+            return None;
         }
+        let slot = first_from(&mut self.ring, self.next_slot, Slot::is_released)?;
+        let until_due = self.pacer.until_due(monotonic_now());
+        if !until_due.is_zero() {
+            return Some(until_due);
+        }
+        self.submit(slot);
+        None
     }
 
     /// The slot and outcome of the request in flight, once the compositor has answered it.
@@ -213,10 +236,10 @@ impl FrameStream for WaylandStream<'_> {
         &mut self,
         wakers: &[BorrowedFd<'_>],
         timeout: Option<Duration>,
-    ) -> Result<Option<CapturedFrame<'_>>, CaptureError> {
+    ) -> Result<Option<CapturedFrame>, CaptureError> {
         let deadline = timeout.map(|timeout| monotonic_now() + timeout);
         loop {
-            self.submit_if_due();
+            let until_due = self.submit_when_due();
             match self.take_answer() {
                 Some((
                     slot,
@@ -226,16 +249,16 @@ impl FrameStream for WaylandStream<'_> {
                     },
                 )) => {
                     self.pacer.mark(presented_at);
-                    self.damage = damage;
                     self.next_slot = (slot + 1) % self.ring.len();
-                    self.submit_if_due();
-                    return Ok(Some(CapturedFrame {
+                    let frame = CapturedFrame {
                         pixels: self.ring[slot].frame_pixels(),
                         slot,
                         generation: self.generation,
                         presented_at,
-                        damage: &self.damage,
-                    }));
+                        damage,
+                    };
+                    self.submit_when_due();
+                    return Ok(Some(frame));
                 }
                 Some((_, FrameStatus::Failed(FailureKind::BufferConstraints))) => {
                     self.renegotiate()?;
@@ -252,12 +275,10 @@ impl FrameStream for WaylandStream<'_> {
             if matches!(self.capture.state.session, SessionStatus::Stopped) {
                 return Err(CaptureError::Stopped);
             }
-            let now = monotonic_now();
-            let remaining = deadline.map(|deadline| deadline.saturating_sub(now));
+            let remaining = deadline.map(|deadline| deadline.saturating_sub(monotonic_now()));
             if remaining.is_some_and(|remaining| remaining.is_zero()) {
                 return Ok(None);
             }
-            let until_due = self.in_flight.is_none().then(|| self.pacer.until_due(now));
             let wait = remaining.into_iter().chain(until_due).min();
             if self.capture.dispatch_until(wakers, wait)? {
                 return Ok(None);
@@ -267,6 +288,10 @@ impl FrameStream for WaylandStream<'_> {
 
     fn set_frame_interval(&mut self, interval: Duration) {
         self.pacer.set_interval(interval);
+    }
+
+    fn capacity(&self) -> usize {
+        RING_SIZE
     }
 
     fn buffer_size(&self) -> (u32, u32) {
@@ -288,5 +313,36 @@ impl Drop for WaylandStream<'_> {
         self.ring.clear();
         self.session.destroy();
         let _ = self.capture.connection.flush();
+    }
+}
+
+/// The first index from `start` on, wrapping around, whose item `accepts`: in a ring handed out in
+/// order, the free slot that was released longest ago.
+fn first_from<T>(
+    items: &mut [T],
+    start: usize,
+    mut accepts: impl FnMut(&mut T) -> bool,
+) -> Option<usize> {
+    let count = items.len();
+    (0..count)
+        .map(|offset| (start + offset) % count)
+        .find(|&index| accepts(&mut items[index]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn picks_the_first_free_slot_from_the_start_wrapping_around() {
+        let mut held = [true, false, true, false];
+        let free = |slot: &mut bool| !*slot;
+        assert_eq!(first_from(&mut held, 0, free), Some(1));
+        assert_eq!(first_from(&mut held, 2, free), Some(3));
+        held[3] = true;
+        assert_eq!(first_from(&mut held, 2, free), Some(1));
+        held[1] = true;
+        assert_eq!(first_from(&mut held, 2, free), None);
+        assert_eq!(first_from(&mut [], 0, free), None);
     }
 }

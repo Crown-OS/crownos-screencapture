@@ -16,6 +16,8 @@ pub enum RecordError {
     PipeWire(#[from] pipewire::Error),
     #[error("the capture delivered a buffer the encoder cannot read")]
     WrongBuffer,
+    #[error("the encode thread panicked")]
+    EncodeThreadPanicked,
     #[error("a recording is already running")]
     AlreadyRecording,
     #[error("recorder service: {0}")]

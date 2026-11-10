@@ -7,7 +7,7 @@ use std::thread;
 use crownos_config::schema::VideoCodec;
 use ffmpeg_next::{Dictionary, encoder, format, frame, picture};
 
-use self::shm_input::borrow_pixels;
+use self::shm_input::share_pixels;
 use super::filter::FilterChain;
 use super::{
     Crop, VideoBackend, VideoEncoder, VideoSettings, drain, ffmpeg_pixel, flush, open_encoder,
@@ -30,11 +30,11 @@ impl VideoBackend for SoftwareBackend {
 
     fn open(
         &self,
-        first: &CapturedFrame<'_>,
+        first: &CapturedFrame,
         _: Option<&Path>,
         settings: &VideoSettings,
     ) -> Result<Box<dyn VideoEncoder>, RecordError> {
-        let FramePixels::Memory(shm) = first.pixels else {
+        let FramePixels::Memory(shm) = &first.pixels else {
             return Err(RecordError::WrongBuffer);
         };
         let output = settings.crop.within(shm.width, shm.height);
@@ -133,7 +133,9 @@ struct SoftwareEncoder {
     converted: frame::Video,
 }
 
-// SAFETY: every FFmpeg object here is owned by the encoder and used from one thread at a time.
+// SAFETY: every FFmpeg object here is owned by the encoder, which is opened on the capture
+// thread and then moved to the encode thread, so one thread at a time uses it. The frames the
+// graph may still hold keep their pixels alive through an `Arc`, which is itself `Send`.
 unsafe impl Send for SoftwareEncoder {}
 
 impl EncodedStream for SoftwareEncoder {
@@ -145,24 +147,18 @@ impl EncodedStream for SoftwareEncoder {
 impl VideoEncoder for SoftwareEncoder {
     fn encode(
         &mut self,
-        frame: &CapturedFrame<'_>,
+        frame: &CapturedFrame,
         timestamp: i64,
         picture: picture::Type,
         sink: &mut dyn PacketSink,
     ) -> Result<(), RecordError> {
-        let FramePixels::Memory(shm) = frame.pixels else {
+        let FramePixels::Memory(shm) = &frame.pixels else {
             return Err(RecordError::WrongBuffer);
         };
         if !self.input.accepts(shm) {
             self.input = SoftwareInput::new(shm, self.crop, self.output_size)?;
         }
-        // SAFETY: the mapping is read-only and wrapped with `AV_BUFFER_FLAG_READONLY`, so it is only
-        // ever read. `frame` borrows the capture stream for this whole call, and the stream re-attaches
-        // the next of its 4 ring slots before handing out this one, so the compositor neither writes
-        // into nor unmaps this slot while the graph is pushed and drained to EAGAIN below. Should an
-        // error leave the frame queued, the recording drops the encoder, and releasing the frame only
-        // runs a no-op free that never touches the mapping.
-        let mut pixels = unsafe { borrow_pixels(shm, self.input.format)? };
+        let mut pixels = share_pixels(shm, self.input.format)?;
         pixels.set_pts(Some(timestamp));
         pixels.set_kind(picture);
         self.input.filters.push(&pixels)?;
@@ -183,8 +179,8 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
     use std::os::fd::OwnedFd;
+    use std::sync::Arc;
 
-    use ffmpeg_next::ffi::{av_buffer_get_ref_count, av_buffer_ref, av_buffer_unref};
     use rustix::fs::{MemfdFlags, memfd_create};
 
     use super::*;
@@ -200,11 +196,11 @@ mod tests {
         height: 30,
     };
 
-    fn patterned_frame() -> Result<ShmFrame, RecordError> {
+    fn patterned_frame(padding: usize) -> Result<ShmFrame, RecordError> {
         let mut file = File::from(
             memfd_create("software-test", MemfdFlags::CLOEXEC).map_err(std::io::Error::from)?,
         );
-        let pattern: Vec<u8> = (0..STRIDE * HEIGHT)
+        let pattern: Vec<u8> = (0..(STRIDE * HEIGHT) as usize + padding)
             .map(|index| (index * 7 % 251) as u8)
             .collect();
         file.write_all(&pattern)?;
@@ -253,20 +249,25 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_pixels_convert_like_copied_ones_and_are_released() -> Result<(), RecordError> {
-        let shm = patterned_frame()?;
+    fn shared_pixels_convert_like_copied_ones_and_are_released() -> Result<(), RecordError> {
+        let shm = Arc::new(patterned_frame(ShmFrame::READ_PADDING)?);
         let expected = convert(&shm, &copied(&shm))?;
-        // SAFETY: `shm` outlives the conversion, which drains the graph before returning.
-        let borrowed = unsafe { shm_input::borrow_pixels(&shm, ffmpeg_pixel(shm.format))? };
-        // SAFETY: `borrowed` holds a valid buffer reference, which this takes a second one to.
-        let mut held = unsafe { av_buffer_ref((*borrowed.as_ptr()).buf[0]) };
-        let converted = convert(&shm, &borrowed)?;
+        let shared = shm_input::share_pixels(&shm, ffmpeg_pixel(shm.format))?;
+        assert_eq!(Arc::strong_count(&shm), 2);
+        let converted = convert(&shm, &shared)?;
         assert_eq!(planes(&converted), planes(&expected));
-        // SAFETY: `held` is the reference taken above and is released exactly once.
-        unsafe {
-            assert_eq!(av_buffer_get_ref_count(held), 1);
-            av_buffer_unref(&mut held);
-        }
+        assert_eq!(Arc::strong_count(&shm), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn refuses_pixels_without_read_padding() -> Result<(), RecordError> {
+        let shm = Arc::new(patterned_frame(0)?);
+        assert!(matches!(
+            shm_input::share_pixels(&shm, ffmpeg_pixel(shm.format)),
+            Err(RecordError::WrongBuffer)
+        ));
+        assert_eq!(Arc::strong_count(&shm), 1);
         Ok(())
     }
 

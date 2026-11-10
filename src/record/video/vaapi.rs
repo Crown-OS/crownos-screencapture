@@ -27,11 +27,11 @@ impl VideoBackend for VaapiBackend {
 
     fn open(
         &self,
-        first: &CapturedFrame<'_>,
+        first: &CapturedFrame,
         render_node: Option<&Path>,
         settings: &VideoSettings,
     ) -> Result<Box<dyn VideoEncoder>, RecordError> {
-        let FramePixels::Gpu(dmabuf) = first.pixels else {
+        let FramePixels::Gpu(dmabuf) = &first.pixels else {
             return Err(RecordError::WrongBuffer);
         };
         let drm_device =
@@ -87,7 +87,9 @@ struct VaapiEncoder {
     converted: frame::Video,
 }
 
-// SAFETY: every FFmpeg object here is owned by the encoder and used from one thread at a time.
+// SAFETY: every FFmpeg object here is owned by the encoder, which is opened on the capture
+// thread and then moved to the encode thread, so one thread at a time uses it. The cached
+// mappings hold their own imports of the GPU memory, never a frame handle.
 unsafe impl Send for VaapiEncoder {}
 
 impl EncodedStream for VaapiEncoder {
@@ -99,12 +101,12 @@ impl EncodedStream for VaapiEncoder {
 impl VideoEncoder for VaapiEncoder {
     fn encode(
         &mut self,
-        frame: &CapturedFrame<'_>,
+        frame: &CapturedFrame,
         timestamp: i64,
         picture: picture::Type,
         sink: &mut dyn PacketSink,
     ) -> Result<(), RecordError> {
-        let FramePixels::Gpu(dmabuf) = frame.pixels else {
+        let FramePixels::Gpu(dmabuf) = &frame.pixels else {
             return Err(RecordError::WrongBuffer);
         };
         if !self.input.accepts(dmabuf) {

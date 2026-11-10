@@ -84,19 +84,19 @@ pub trait VideoBackend {
     /// Opens an encoder sized for `first`, which it has not encoded yet.
     fn open(
         &self,
-        first: &CapturedFrame<'_>,
+        first: &CapturedFrame,
         render_node: Option<&Path>,
         settings: &VideoSettings,
     ) -> Result<Box<dyn VideoEncoder>, RecordError>;
 }
 
 /// A running video encoder.
-pub trait VideoEncoder: EncodedStream {
+pub trait VideoEncoder: EncodedStream + Send {
     /// Encodes `frame`, stamped `timestamp` microseconds into the recording, forcing a
     /// keyframe when `picture` is `I`.
     fn encode(
         &mut self,
-        frame: &CapturedFrame<'_>,
+        frame: &CapturedFrame,
         timestamp: i64,
         picture: picture::Type,
         sink: &mut dyn PacketSink,
