@@ -196,6 +196,8 @@ pub struct CapturedFrame<'frame> {
     pub pixels: FramePixels<'frame>,
     /// The ring slot holding the frame, stable for the life of the stream.
     pub slot: usize,
+    /// Counts the ring allocations of the stream, so state cached per slot knows when its buffer changed.
+    pub generation: u64,
     /// When the compositor presented the frame, on `CLOCK_MONOTONIC`.
     pub presented_at: Duration,
 }

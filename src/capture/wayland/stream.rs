@@ -65,6 +65,7 @@ pub struct WaylandStream<'capture> {
     ring: Vec<Slot>,
     in_flight: Option<(ExtImageCopyCaptureFrameV1, usize)>,
     size: (u32, u32),
+    generation: u64,
 }
 
 impl<'capture> WaylandStream<'capture> {
@@ -83,6 +84,7 @@ impl<'capture> WaylandStream<'capture> {
             ring: Vec::new(),
             in_flight: None,
             size: (0, 0),
+            generation: 0,
         };
         stream.allocate_ring(&constraints)?;
         stream.submit(0);
@@ -91,6 +93,7 @@ impl<'capture> WaylandStream<'capture> {
 
     fn allocate_ring(&mut self, constraints: &Constraints) -> Result<(), CaptureError> {
         self.ring.clear();
+        self.generation += 1;
         self.size = (constraints.width, constraints.height);
         for _ in 0..RING_SIZE {
             let slot = match self.kind {
@@ -205,6 +208,7 @@ impl FrameStream for WaylandStream<'_> {
                 Ok(Some(CapturedFrame {
                     pixels: self.ring[slot].frame_pixels(),
                     slot,
+                    generation: self.generation,
                     presented_at,
                 }))
             }
