@@ -1,31 +1,20 @@
-use super::{AudioSource, CHANNELS, SAMPLE_RATE};
+use super::source::SourceReader;
 
-/// The most a source may run ahead before its oldest samples are dropped: 200 ms.
-const MAX_BACKLOG: usize = SAMPLE_RATE as usize / 5 * CHANNELS;
-
-/// Sums several sources into one stream, padding any that fall behind with silence.
+/// Sums several sources on one timeline, so a silent or suspended source never stalls the others.
 pub struct Mixer {
-    sources: Vec<Box<dyn AudioSource>>,
-    scratch: Vec<f32>,
+    sources: Vec<SourceReader>,
 }
 
 impl Mixer {
-    pub fn new(sources: Vec<Box<dyn AudioSource>>) -> Self {
-        Self {
-            sources,
-            scratch: Vec::new(),
-        }
+    pub fn new(sources: Vec<SourceReader>) -> Self {
+        Self { sources }
     }
 
-    pub fn mix(&mut self, output: &mut [f32]) {
+    /// Mixes the window that starts `window_start` frames after `origin_ns` into `output`.
+    pub fn mix(&mut self, origin_ns: i64, window_start: i64, output: &mut [f32]) {
         output.fill(0.0);
-        self.scratch.resize(output.len(), 0.0);
         for source in &mut self.sources {
-            source.discard_beyond(MAX_BACKLOG + output.len());
-            let read = source.read(&mut self.scratch);
-            for (mixed, sample) in output.iter_mut().zip(&self.scratch[..read]) {
-                *mixed += sample;
-            }
+            source.add_window(origin_ns, window_start, output);
         }
         for sample in output.iter_mut() {
             *sample = sample.clamp(-1.0, 1.0);
@@ -36,28 +25,31 @@ impl Mixer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn source(samples: &[f32]) -> Box<dyn AudioSource> {
-        let (mut producer, consumer) = rtrb::RingBuffer::new(MAX_BACKLOG * 2);
-        for &sample in samples {
-            producer.push(sample).unwrap();
-        }
-        Box::new(consumer)
-    }
+    use crate::record::audio::CHANNELS;
+    use crate::record::audio::source::tests::queue;
+    use crate::record::audio::source::timed_source;
 
     #[test]
-    fn sums_and_pads_sources() {
-        let mut mixer = Mixer::new(vec![source(&[0.25, 0.25, 0.5, 0.5]), source(&[0.5, 0.5])]);
-        let mut output = [1.0; 4];
-        mixer.mix(&mut output);
-        assert_eq!(output, [0.75, 0.75, 0.5, 0.5]);
+    fn sums_sources_on_one_timeline() {
+        let (mut early, early_reader) = timed_source(8, 2);
+        let (mut late, late_reader) = timed_source(8, 2);
+        queue(&mut early, 0, &[0.25; 4]);
+        queue(&mut late, 2, &[0.5; 2]);
+        let mut mixer = Mixer::new(vec![early_reader, late_reader]);
+        let mut output = [1.0; 4 * CHANNELS];
+        mixer.mix(0, 0, &mut output);
+        assert_eq!(output, [0.25, 0.25, 0.25, 0.25, 0.75, 0.75, 0.75, 0.75]);
     }
 
     #[test]
     fn clips_loud_mixes() {
-        let mut mixer = Mixer::new(vec![source(&[0.9, -0.9]), source(&[0.9, -0.9])]);
-        let mut output = [0.0; 2];
-        mixer.mix(&mut output);
-        assert_eq!(output, [1.0, -1.0]);
+        let (mut first, first_reader) = timed_source(2, 1);
+        let (mut second, second_reader) = timed_source(2, 1);
+        queue(&mut first, 0, &[0.9]);
+        queue(&mut second, 0, &[0.9]);
+        let mut mixer = Mixer::new(vec![first_reader, second_reader]);
+        let mut output = [0.0; CHANNELS];
+        mixer.mix(0, 0, &mut output);
+        assert_eq!(output, [1.0; CHANNELS]);
     }
 }
