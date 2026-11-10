@@ -52,6 +52,16 @@ impl Crop {
         };
         rect.even()
     }
+
+    /// Whether `damage` on a frame of `size` may have changed the kept pixels. Empty damage is
+    /// unknown damage, so it may.
+    pub fn is_changed_by(self, damage: &[PixelRect], (width, height): (u32, u32)) -> bool {
+        let Self::Region(_) = self else {
+            return true;
+        };
+        let kept = self.within(width, height);
+        damage.is_empty() || damage.iter().any(|rect| rect.intersects(&kept))
+    }
 }
 
 /// A family of encoders sharing a buffer kind.
@@ -196,5 +206,27 @@ mod tests {
                 height: 766
             }
         );
+    }
+
+    #[test]
+    fn region_changes_only_under_damage() {
+        let size = (1920, 1080);
+        let crop = Crop::Region(PixelRect {
+            x: 100,
+            y: 100,
+            width: 200,
+            height: 200,
+        });
+        let damage = |x, y| PixelRect {
+            x,
+            y,
+            width: 50,
+            height: 50,
+        };
+        assert!(crop.is_changed_by(&[], size));
+        assert!(crop.is_changed_by(&[damage(0, 0), damage(280, 280)], size));
+        assert!(!crop.is_changed_by(&[damage(0, 0), damage(1000, 500)], size));
+        assert!(!crop.is_changed_by(&[damage(300, 100), damage(100, 50)], size));
+        assert!(Crop::Full.is_changed_by(&[damage(0, 0)], size));
     }
 }

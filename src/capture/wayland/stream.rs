@@ -12,11 +12,11 @@ use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1
 
 use super::WaylandCapture;
 use super::gpu::GpuAllocator;
-use super::session::{Constraints, FailureKind, FrameStatus};
+use super::session::{Constraints, FailureKind, FrameStatus, SessionStatus};
 use super::state::Silent;
 use crate::capture::{
-    BufferKind, CaptureError, CaptureTarget, CapturedFrame, CursorMode, DmabufFrame, FramePixels,
-    FrameStream, ShmFrame,
+    BufferKind, CaptureError, CaptureTarget, CapturedFrame, CursorMode, DmabufFrame, FramePacer,
+    FramePixels, FrameStream, PixelRect, ShmFrame, monotonic_now,
 };
 
 /// Enough buffers that the compositor never renders into one the encoder still reads.
@@ -64,6 +64,9 @@ pub struct WaylandStream<'capture> {
     allocator: Option<GpuAllocator>,
     ring: Vec<Slot>,
     in_flight: Option<(ExtImageCopyCaptureFrameV1, usize)>,
+    next_slot: usize,
+    pacer: FramePacer,
+    damage: Vec<PixelRect>,
     size: (u32, u32),
     generation: u64,
 }
@@ -83,6 +86,9 @@ impl<'capture> WaylandStream<'capture> {
             allocator: None,
             ring: Vec::new(),
             in_flight: None,
+            next_slot: 0,
+            pacer: FramePacer::default(),
+            damage: Vec::new(),
             size: (0, 0),
             generation: 0,
         };
@@ -175,6 +181,25 @@ impl<'capture> WaylandStream<'capture> {
         self.in_flight = Some((frame, slot));
     }
 
+    fn submit_if_due(&mut self) {
+        if self.pacer.until_due(monotonic_now()).is_zero() {
+            self.submit(self.next_slot);
+        }
+    }
+
+    /// Services events until the next request is due, for at most `timeout`, then sends it if it is.
+    fn await_due(&mut self, timeout: Duration) -> Result<(), CaptureError> {
+        let wait = self.pacer.until_due(monotonic_now());
+        if !wait.is_zero() {
+            self.capture.dispatch_timeout(wait.min(timeout))?;
+        }
+        if matches!(self.capture.state.session, SessionStatus::Stopped) {
+            return Err(CaptureError::Stopped);
+        }
+        self.submit_if_due();
+        Ok(())
+    }
+
     fn renegotiate(&mut self) -> Result<(), CaptureError> {
         let constraints = self.capture.await_constraints()?;
         self.allocate_ring(&constraints)?;
@@ -185,13 +210,18 @@ impl<'capture> WaylandStream<'capture> {
 
 impl FrameStream for WaylandStream<'_> {
     fn next_frame(&mut self, timeout: Duration) -> Result<Option<CapturedFrame<'_>>, CaptureError> {
+        let deadline = monotonic_now() + timeout;
+        if self.in_flight.is_none() {
+            self.await_due(timeout)?;
+        }
         let Some((frame, slot)) = self.in_flight.take() else {
-            return Err(CaptureError::Stopped);
+            return Ok(None);
         };
         let status = match self.capture.take_frame_status(&frame) {
             Some(status) => status,
             None => {
-                self.capture.dispatch_timeout(timeout)?;
+                self.capture
+                    .dispatch_timeout(deadline.saturating_sub(monotonic_now()))?;
                 match self.capture.take_frame_status(&frame) {
                     Some(status) => status,
                     None => {
@@ -203,13 +233,20 @@ impl FrameStream for WaylandStream<'_> {
         };
         frame.destroy();
         match status {
-            FrameStatus::Ready { presented_at } => {
-                self.submit((slot + 1) % self.ring.len());
+            FrameStatus::Ready {
+                presented_at,
+                damage,
+            } => {
+                self.pacer.mark(presented_at);
+                self.damage = damage;
+                self.next_slot = (slot + 1) % self.ring.len();
+                self.submit_if_due();
                 Ok(Some(CapturedFrame {
                     pixels: self.ring[slot].frame_pixels(),
                     slot,
                     generation: self.generation,
                     presented_at,
+                    damage: &self.damage,
                 }))
             }
             FrameStatus::Failed(FailureKind::BufferConstraints) => {
@@ -220,6 +257,10 @@ impl FrameStream for WaylandStream<'_> {
                 Err(CaptureError::Failed("compositor error"))
             }
         }
+    }
+
+    fn set_frame_interval(&mut self, interval: Duration) {
+        self.pacer.set_interval(interval);
     }
 
     fn buffer_size(&self) -> (u32, u32) {

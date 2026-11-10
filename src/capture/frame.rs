@@ -205,6 +205,8 @@ pub struct CapturedFrame<'frame> {
     pub generation: u64,
     /// When the compositor presented the frame, on `CLOCK_MONOTONIC`.
     pub presented_at: Duration,
+    /// The parts of the buffer that changed since the previous frame; empty when unknown.
+    pub damage: &'frame [PixelRect],
 }
 
 /// Which kind of buffer a stream should capture into.
