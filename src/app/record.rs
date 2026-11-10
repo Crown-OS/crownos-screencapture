@@ -38,6 +38,7 @@ pub fn run(arguments: RecordArgs) -> Result<()> {
             frames_per_second: settings.0.frame_rate,
             crop: Crop::Full,
         },
+        encoder: arguments.encoder,
         audio: if arguments.no_audio {
             Vec::new()
         } else {

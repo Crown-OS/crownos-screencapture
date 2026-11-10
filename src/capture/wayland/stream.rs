@@ -16,7 +16,7 @@ use super::session::{Constraints, FailureKind, FrameStatus, SessionStatus};
 use super::state::Silent;
 use crate::capture::{
     BufferKind, CaptureError, CaptureTarget, CapturedFrame, CursorMode, DmabufFrame, FramePacer,
-    FramePixels, FrameStream, PixelRect, ShmFrame, monotonic_now,
+    FramePixels, FrameStream, PixelFormat, PixelRect, ShmFrame, monotonic_now,
 };
 
 /// Enough buffers that the compositor never renders into one the encoder still reads.
@@ -61,6 +61,7 @@ pub struct WaylandStream<'capture> {
     capture: &'capture mut WaylandCapture,
     session: ExtImageCopyCaptureSessionV1,
     kind: BufferKind,
+    formats: &'static [PixelFormat],
     allocator: Option<GpuAllocator>,
     ring: Vec<Slot>,
     in_flight: Option<(ExtImageCopyCaptureFrameV1, usize)>,
@@ -77,12 +78,14 @@ impl<'capture> WaylandStream<'capture> {
         target: &CaptureTarget,
         cursor: CursorMode,
         kind: BufferKind,
+        formats: &'static [PixelFormat],
     ) -> Result<Self, CaptureError> {
         let (session, constraints) = capture.open_session(target, cursor)?;
         let mut stream = Self {
             capture,
             session,
             kind,
+            formats,
             allocator: None,
             ring: Vec::new(),
             in_flight: None,
@@ -113,7 +116,7 @@ impl<'capture> WaylandStream<'capture> {
 
     fn memory_slot(&self, constraints: &Constraints) -> Result<Slot, CaptureError> {
         let format = constraints
-            .shm_format()
+            .shm_format(self.formats)
             .ok_or(CaptureError::NoBufferFormat)?;
         let frame = ShmFrame::allocate(constraints.width, constraints.height, format)?;
         let (pool, buffer) = self.capture.shm_buffer(&frame);
@@ -131,7 +134,7 @@ impl<'capture> WaylandStream<'capture> {
             .clone()
             .ok_or(CaptureError::Unsupported("linux-dmabuf-v1"))?;
         let (format, modifiers) = constraints
-            .dmabuf_format()
+            .dmabuf_format(self.formats)
             .ok_or(CaptureError::NoBufferFormat)?;
         if self.allocator.is_none() {
             let device = constraints

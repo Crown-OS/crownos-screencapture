@@ -41,12 +41,14 @@ pub trait ScreenCapture {
         cursor: CursorMode,
     ) -> Result<ShmFrame, CaptureError>;
 
-    /// Starts a stream of frames into buffers of `kind`.
+    /// Starts a stream of frames into buffers of `kind`, in the first of `formats` the
+    /// compositor offers.
     fn stream(
         &mut self,
         target: &CaptureTarget,
         cursor: CursorMode,
         kind: BufferKind,
+        formats: &'static [PixelFormat],
     ) -> Result<Self::Stream<'_>, CaptureError>;
 
     /// The output named `name`, or the focused one when `name` is `None`.
