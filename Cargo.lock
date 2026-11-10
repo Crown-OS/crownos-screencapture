@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "crownos-preview"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crownos-ipc",
  "serde",
@@ -967,6 +967,7 @@ name = "graphics"
 version = "0.1.1"
 dependencies = [
  "geometry",
+ "rustc-hash",
  "smallvec",
  "thiserror 2.0.21",
 ]
@@ -1037,6 +1038,7 @@ dependencies = [
  "khronos-egl",
  "png",
  "raw-window-handle",
+ "rustc-hash",
  "thiserror 2.0.21",
  "tracing",
  "wayland-egl",
@@ -1693,6 +1695,7 @@ dependencies = [
  "inspect",
  "layouting",
  "motion",
+ "rustc-hash",
  "semantics",
  "thiserror 2.0.21",
  "tracing",
@@ -2334,6 +2337,7 @@ dependencies = [
  "layouting",
  "motion",
  "reactive",
+ "rustc-hash",
  "semantics",
  "slotmap",
  "smallvec",
