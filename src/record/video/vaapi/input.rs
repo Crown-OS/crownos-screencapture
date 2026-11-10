@@ -1,14 +1,13 @@
-use ffmpeg_next::ffi::{AV_HWFRAME_MAP_DIRECT, AV_HWFRAME_MAP_READ, AVPixelFormat, av_hwframe_map};
+use ffmpeg_next::ffi::{AV_HWFRAME_MAP_DIRECT, AV_HWFRAME_MAP_READ, AVPixelFormat};
 use ffmpeg_next::{frame, picture};
 
 use super::super::Crop;
+use super::super::dmabuf::map_frame;
 use super::super::filter::FilterChain;
 use super::super::hardware::HardwareContext;
-use super::dmabuf::drm_frame;
-use super::slots::SlotCache;
+use super::super::slots::SlotCache;
 use crate::capture::{CapturedFrame, DmabufFrame, PixelFormat, PixelRect};
 use crate::record::RecordError;
-use crate::record::error::check;
 
 const MAP_FLAGS: i32 = AV_HWFRAME_MAP_READ as i32 | AV_HWFRAME_MAP_DIRECT as i32;
 
@@ -79,7 +78,14 @@ impl VaapiInput {
         let surface =
             self.surfaces
                 .get_or_try_insert(captured.slot, captured.generation, || {
-                    map_surface(dmabuf, &self.drm_frames, &self.vaapi_frames, self.crop)
+                    map_frame(
+                        dmabuf,
+                        &self.drm_frames,
+                        &self.vaapi_frames,
+                        AVPixelFormat::AV_PIX_FMT_VAAPI,
+                        MAP_FLAGS,
+                        self.crop,
+                    )
                 })?;
         surface.set_pts(Some(timestamp));
         surface.set_kind(picture);
@@ -87,34 +93,6 @@ impl VaapiInput {
         surface.set_kind(picture::Type::None);
         pushed
     }
-}
-
-/// Imports `dmabuf` as a VA-API surface of `vaapi_frames`, cropped to `crop`.
-fn map_surface(
-    dmabuf: &DmabufFrame,
-    drm_frames: &HardwareContext,
-    vaapi_frames: &HardwareContext,
-    crop: PixelRect,
-) -> Result<frame::Video, RecordError> {
-    let drm = drm_frame(dmabuf, drm_frames)?;
-    let mut surface = frame::Video::empty();
-    // SAFETY: the surface frame is blank apart from the format and frames reference it owns,
-    // which av_hwframe_map requires to map into `vaapi_frames`; the mapping keeps its own
-    // reference to `drm`.
-    unsafe {
-        let raw = surface.as_mut_ptr();
-        (*raw).format = AVPixelFormat::AV_PIX_FMT_VAAPI as i32;
-        (*raw).hw_frames_ctx = vaapi_frames.new_reference();
-        check(
-            av_hwframe_map(raw, drm.as_ptr(), MAP_FLAGS),
-            "av_hwframe_map",
-        )?;
-        (*raw).crop_left = crop.x as usize;
-        (*raw).crop_top = crop.y as usize;
-        (*raw).crop_right = (dmabuf.width - crop.x - crop.width) as usize;
-        (*raw).crop_bottom = (dmabuf.height - crop.y - crop.height) as usize;
-    }
-    Ok(surface)
 }
 
 fn software_format(format: PixelFormat) -> AVPixelFormat {

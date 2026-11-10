@@ -4,6 +4,7 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand};
 
 use crate::capture::{PixelFormat, Region};
+use crate::record::EncoderChoice;
 
 /// Screenshots and screen recordings. Without a command, opens the capture toolbar.
 #[derive(Debug, Parser)]
@@ -102,6 +103,9 @@ pub struct RecordArgs {
     /// Wait this many milliseconds before recording, on top of the countdown setting.
     #[arg(long, value_name = "MILLISECONDS", default_value_t = 0)]
     pub delay: u64,
+    /// Which video encoder to use.
+    #[arg(long, value_enum, default_value_t)]
+    pub encoder: EncoderChoice,
 }
 
 #[derive(Debug, Args)]

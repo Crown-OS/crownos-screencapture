@@ -21,7 +21,7 @@ pub use self::mux::Container;
 use self::mux::{Muxer, PendingPackets};
 use self::video::{
     Crop, KeyframeSchedule, SoftwareBackend, VaapiBackend, VideoBackend, VideoEncoder,
-    VideoSettings,
+    VideoSettings, VulkanBackend,
 };
 use crate::capture::{CaptureError, CaptureTarget, CursorMode, FrameStream, Region, ScreenCapture};
 
@@ -49,9 +49,32 @@ pub struct ScreenRecording {
     pub region: Option<OutputRegion>,
     pub cursor: CursorMode,
     pub video: VideoSettings,
+    pub encoder: EncoderChoice,
     pub audio: Vec<CaptureNode>,
     pub container: Container,
     pub path: PathBuf,
+}
+
+/// Which video encoders a recording may try.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum EncoderChoice {
+    /// VA-API, then Vulkan, then software.
+    #[default]
+    Auto,
+    Vaapi,
+    Vulkan,
+    Software,
+}
+
+impl EncoderChoice {
+    fn backends(self) -> &'static [&'static dyn VideoBackend] {
+        match self {
+            Self::Auto => &[&VaapiBackend, &VulkanBackend, &SoftwareBackend],
+            Self::Vaapi => &[&VaapiBackend],
+            Self::Vulkan => &[&VulkanBackend],
+            Self::Software => &[&SoftwareBackend],
+        }
+    }
 }
 
 /// A region of an output, with that output's logical size to scale it to buffer pixels.
@@ -76,9 +99,8 @@ pub fn record_screen(
     started: &mut dyn FnMut(),
 ) -> Result<(), RecordError> {
     ffmpeg_next::init()?;
-    let backends: [&dyn VideoBackend; 2] = [&VaapiBackend, &SoftwareBackend];
     let mut last_failure = None;
-    for backend in backends {
+    for &backend in recording.encoder.backends() {
         match record_with(capture, backend, recording, stop, started)? {
             Attempt::Recorded => return Ok(()),
             Attempt::Unsupported(error) => {
@@ -97,18 +119,22 @@ fn record_with(
     stop: &StopSignal,
     started: &mut dyn FnMut(),
 ) -> Result<Attempt, RecordError> {
-    let mut stream =
-        match capture.stream(&recording.target, recording.cursor, backend.buffer_kind()) {
-            Ok(stream) => stream,
-            Err(
-                error @ (CaptureError::Unsupported(_)
-                | CaptureError::NoBufferFormat
-                | CaptureError::NoRenderNode(_)),
-            ) => {
-                return Ok(Attempt::Unsupported(error.into()));
-            }
-            Err(error) => return Err(error.into()),
-        };
+    let mut stream = match capture.stream(
+        &recording.target,
+        recording.cursor,
+        backend.buffer_kind(),
+        backend.pixel_formats(),
+    ) {
+        Ok(stream) => stream,
+        Err(
+            error @ (CaptureError::Unsupported(_)
+            | CaptureError::NoBufferFormat
+            | CaptureError::NoRenderNode(_)),
+        ) => {
+            return Ok(Attempt::Unsupported(error.into()));
+        }
+        Err(error) => return Err(error.into()),
+    };
     stream.set_frame_interval(Duration::from_secs(1) / recording.video.frames_per_second.max(1));
     let render_node = stream.render_node().map(Path::to_path_buf);
     let settings = VideoSettings {

@@ -1,6 +1,4 @@
-mod dmabuf;
 mod input;
-mod slots;
 
 use std::path::Path;
 

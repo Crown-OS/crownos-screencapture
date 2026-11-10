@@ -4,12 +4,15 @@
 //! frame shows the real size. [`VaapiBackend`] keeps frames on the GPU end to end;
 //! [`SoftwareBackend`] is the fallback for machines without a usable VA-API driver.
 
+mod dmabuf;
 mod filter;
 mod hardware;
 mod keyframes;
 mod rate;
+mod slots;
 mod software;
 mod vaapi;
+mod vulkan;
 
 use std::path::Path;
 
@@ -20,6 +23,7 @@ use ffmpeg_next::{Dictionary, Packet, Rational, codec, encoder, format, picture}
 pub use self::keyframes::KeyframeSchedule;
 pub use self::software::SoftwareBackend;
 pub use self::vaapi::VaapiBackend;
+pub use self::vulkan::VulkanBackend;
 use super::clock::RecordingClock;
 use super::{EncodedStream, PacketSink, RecordError};
 use crate::capture::{BufferKind, CapturedFrame, PixelFormat, PixelRect};
@@ -71,6 +75,11 @@ pub trait VideoBackend {
     fn name(&self) -> &'static str;
 
     fn buffer_kind(&self) -> BufferKind;
+
+    /// The pixel layouts this backend can take, best first.
+    fn pixel_formats(&self) -> &'static [PixelFormat] {
+        &PixelFormat::PREFERRED
+    }
 
     /// Opens an encoder sized for `first`, which it has not encoded yet.
     fn open(

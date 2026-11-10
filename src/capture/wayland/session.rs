@@ -22,14 +22,15 @@ pub(super) struct Constraints {
 }
 
 impl Constraints {
-    pub fn shm_format(&self) -> Option<PixelFormat> {
-        PixelFormat::PREFERRED
-            .into_iter()
+    pub fn shm_format(&self, preferred: &[PixelFormat]) -> Option<PixelFormat> {
+        preferred
+            .iter()
+            .copied()
             .find(|format| self.shm_formats.contains(format))
     }
 
-    pub fn dmabuf_format(&self) -> Option<&(PixelFormat, Vec<u64>)> {
-        PixelFormat::PREFERRED.iter().find_map(|preferred| {
+    pub fn dmabuf_format(&self, preferred: &[PixelFormat]) -> Option<&(PixelFormat, Vec<u64>)> {
+        preferred.iter().find_map(|preferred| {
             self.dmabuf_formats
                 .iter()
                 .find(|(format, _)| format == preferred)

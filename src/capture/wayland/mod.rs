@@ -22,8 +22,8 @@ use self::session::{Constraints, FailureKind, FrameData, FrameStatus, SessionDat
 use self::state::{CaptureGlobals, Silent, State};
 pub use self::stream::WaylandStream;
 use super::{
-    BufferKind, CaptureError, CaptureTarget, CursorMode, OutputInfo, ScreenCapture, ShmFrame,
-    WindowInfo,
+    BufferKind, CaptureError, CaptureTarget, CursorMode, OutputInfo, PixelFormat, ScreenCapture,
+    ShmFrame, WindowInfo,
 };
 
 /// Screen capture over `ext-image-copy-capture-v1`.
@@ -203,7 +203,7 @@ impl ScreenCapture for WaylandCapture {
     ) -> Result<ShmFrame, CaptureError> {
         let (session, constraints) = self.open_session(target, cursor)?;
         let format = constraints
-            .shm_format()
+            .shm_format(&PixelFormat::PREFERRED)
             .ok_or(CaptureError::NoBufferFormat)?;
         let pixels = ShmFrame::allocate(constraints.width, constraints.height, format)?;
         let (pool, buffer) = self.shm_buffer(&pixels);
@@ -236,7 +236,8 @@ impl ScreenCapture for WaylandCapture {
         target: &CaptureTarget,
         cursor: CursorMode,
         kind: BufferKind,
+        formats: &'static [PixelFormat],
     ) -> Result<WaylandStream<'_>, CaptureError> {
-        WaylandStream::start(self, target, cursor, kind)
+        WaylandStream::start(self, target, cursor, kind, formats)
     }
 }

@@ -1,19 +1,45 @@
 use std::ffi::c_void;
 use std::os::fd::{AsFd, AsRawFd};
 
-use ffmpeg_next::ffi::{AVDRMFrameDescriptor, AVPixelFormat, av_buffer_create};
+use ffmpeg_next::ffi::{AVDRMFrameDescriptor, AVPixelFormat, av_buffer_create, av_hwframe_map};
 use ffmpeg_next::frame;
 use rustix::fs::{SeekFrom, seek};
 
-use super::super::hardware::HardwareContext;
-use crate::capture::DmabufFrame;
+use super::hardware::HardwareContext;
+use crate::capture::{DmabufFrame, PixelRect};
 use crate::record::RecordError;
+use crate::record::error::check;
+
+/// Maps `dmabuf` into `frames`, a pool of `format` frames derived from `drm_frames`, showing
+/// the `crop` part of it.
+pub fn map_frame(
+    dmabuf: &DmabufFrame,
+    drm_frames: &HardwareContext,
+    frames: &HardwareContext,
+    format: AVPixelFormat,
+    flags: i32,
+    crop: PixelRect,
+) -> Result<frame::Video, RecordError> {
+    let drm = drm_frame(dmabuf, drm_frames)?;
+    let mut mapped = frame::Video::empty();
+    // SAFETY: the mapped frame is blank apart from the format and frames reference it owns,
+    // which av_hwframe_map requires to map into `frames`; the mapping keeps its own reference
+    // to `drm`.
+    unsafe {
+        let raw = mapped.as_mut_ptr();
+        (*raw).format = format as i32;
+        (*raw).hw_frames_ctx = frames.new_reference();
+        check(av_hwframe_map(raw, drm.as_ptr(), flags), "av_hwframe_map")?;
+        (*raw).crop_left = crop.x as usize;
+        (*raw).crop_top = crop.y as usize;
+        (*raw).crop_right = (dmabuf.width - crop.x - crop.width) as usize;
+        (*raw).crop_bottom = (dmabuf.height - crop.y - crop.height) as usize;
+    }
+    Ok(mapped)
+}
 
 /// A DRM_PRIME frame in `frames` describing `dmabuf`, owning its descriptor.
-pub fn drm_frame(
-    dmabuf: &DmabufFrame,
-    frames: &HardwareContext,
-) -> Result<frame::Video, RecordError> {
+fn drm_frame(dmabuf: &DmabufFrame, frames: &HardwareContext) -> Result<frame::Video, RecordError> {
     let descriptor = Box::into_raw(Box::new(drm_descriptor(dmabuf)?));
     // SAFETY: the descriptor is a live heap allocation; on success the buffer owns it and
     // releases it through `free_descriptor`, otherwise it is reclaimed here.
