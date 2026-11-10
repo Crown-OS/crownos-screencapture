@@ -75,6 +75,18 @@ impl PixelRect {
             ..self
         }
     }
+
+    /// Whether the two rectangles share at least one pixel; touching edges share none.
+    pub fn intersects(&self, other: &PixelRect) -> bool {
+        let overlaps = |start: u32, length: u32, other_start: u32, other_length: u32| {
+            start.max(other_start)
+                < start
+                    .saturating_add(length)
+                    .min(other_start.saturating_add(other_length))
+        };
+        overlaps(self.x, self.width, other.x, other.width)
+            && overlaps(self.y, self.height, other.y, other.height)
+    }
 }
 
 impl Region {
@@ -214,5 +226,43 @@ mod tests {
                 height: 6
             }
         );
+    }
+
+    fn rect(x: u32, y: u32, width: u32, height: u32) -> PixelRect {
+        PixelRect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn overlapping_rects_intersect() {
+        let kept = rect(100, 100, 200, 200);
+        assert!(kept.intersects(&rect(250, 250, 100, 100)));
+        assert!(kept.intersects(&rect(0, 0, 1000, 1000)));
+        assert!(rect(0, 0, 1000, 1000).intersects(&kept));
+        assert!(kept.intersects(&rect(299, 299, 1, 1)));
+    }
+
+    #[test]
+    fn touching_or_distant_rects_do_not_intersect() {
+        let kept = rect(100, 100, 200, 200);
+        assert!(!kept.intersects(&rect(300, 100, 50, 50)));
+        assert!(!kept.intersects(&rect(100, 0, 50, 100)));
+        assert!(!kept.intersects(&rect(0, 400, 50, 50)));
+    }
+
+    #[test]
+    fn empty_rects_never_intersect() {
+        let kept = rect(100, 100, 200, 200);
+        assert!(!kept.intersects(&rect(150, 150, 0, 10)));
+        assert!(!rect(150, 150, 10, 0).intersects(&kept));
+    }
+
+    #[test]
+    fn huge_rects_do_not_overflow() {
+        assert!(rect(u32::MAX - 1, 0, u32::MAX, 10).intersects(&rect(u32::MAX - 1, 5, 1, 1)));
     }
 }

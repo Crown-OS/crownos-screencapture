@@ -9,7 +9,7 @@ use wayland_protocols::ext::image_copy_capture::v1::client::{
 };
 
 use super::state::State;
-use crate::capture::PixelFormat;
+use crate::capture::{PixelFormat, PixelRect};
 
 /// What the compositor accepts for a session's buffers.
 #[derive(Debug, Default, Clone)]
@@ -50,9 +50,12 @@ pub(super) struct SessionData {
     pending: std::sync::Mutex<Constraints>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum FrameStatus {
-    Ready { presented_at: Duration },
+    Ready {
+        presented_at: Duration,
+        damage: Vec<PixelRect>,
+    },
     Failed(FailureKind),
 }
 
@@ -65,7 +68,13 @@ pub(super) enum FailureKind {
 
 #[derive(Debug, Default)]
 pub(super) struct FrameData {
-    presented_at: std::sync::Mutex<Duration>,
+    pending: std::sync::Mutex<PendingFrame>,
+}
+
+#[derive(Debug, Default)]
+struct PendingFrame {
+    presented_at: Duration,
+    damage: Vec<PixelRect>,
 }
 
 impl Dispatch2<ExtImageCopyCaptureSessionV1, State> for SessionData {
@@ -125,7 +134,7 @@ impl Dispatch2<ExtImageCopyCaptureFrameV1, State> for FrameData {
         _: &Connection,
         _: &QueueHandle<State>,
     ) {
-        let Ok(mut presented_at) = self.presented_at.lock() else {
+        let Ok(mut pending) = self.pending.lock() else {
             return;
         };
         let status = match event {
@@ -135,11 +144,21 @@ impl Dispatch2<ExtImageCopyCaptureFrameV1, State> for FrameData {
                 tv_nsec,
             } => {
                 let seconds = (u64::from(tv_sec_hi) << 32) | u64::from(tv_sec_lo);
-                *presented_at = Duration::new(seconds, tv_nsec);
+                pending.presented_at = Duration::new(seconds, tv_nsec);
+                return;
+            }
+            ext_image_copy_capture_frame_v1::Event::Damage {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                pending.damage.push(damage_rect(x, y, width, height));
                 return;
             }
             ext_image_copy_capture_frame_v1::Event::Ready => FrameStatus::Ready {
-                presented_at: *presented_at,
+                presented_at: pending.presented_at,
+                damage: std::mem::take(&mut pending.damage),
             },
             ext_image_copy_capture_frame_v1::Event::Failed { reason } => {
                 FrameStatus::Failed(match reason {
@@ -155,6 +174,23 @@ impl Dispatch2<ExtImageCopyCaptureFrameV1, State> for FrameData {
             _ => return,
         };
         state.frames.insert(frame.id(), status);
+    }
+}
+
+/// The part of a damage rectangle at non-negative buffer coordinates.
+fn damage_rect(x: i32, y: i32, width: i32, height: i32) -> PixelRect {
+    let span = |start: i32, length: i32| {
+        let first = start.max(0);
+        let end = start.saturating_add(length).max(first);
+        (first.unsigned_abs(), end.abs_diff(first))
+    };
+    let (x, width) = span(x, width);
+    let (y, height) = span(y, height);
+    PixelRect {
+        x,
+        y,
+        width,
+        height,
     }
 }
 
@@ -174,5 +210,32 @@ pub(super) fn shm_format(format: PixelFormat) -> wl_shm::Format {
         PixelFormat::Bgra => wl_shm::Format::Argb8888,
         PixelFormat::Rgbx => wl_shm::Format::Xbgr8888,
         PixelFormat::Rgba => wl_shm::Format::Abgr8888,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_damage_inside_the_buffer() {
+        assert_eq!(
+            damage_rect(10, 20, 30, 40),
+            PixelRect {
+                x: 10,
+                y: 20,
+                width: 30,
+                height: 40
+            }
+        );
+        assert_eq!(
+            damage_rect(-10, -5, 30, 4),
+            PixelRect {
+                x: 0,
+                y: 0,
+                width: 20,
+                height: 0
+            }
+        );
     }
 }

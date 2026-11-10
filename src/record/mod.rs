@@ -14,7 +14,7 @@ use ffmpeg_next::{Packet, codec};
 
 use self::audio::AudioTrack;
 pub use self::audio::CaptureNode;
-use self::clock::{FramePacer, RecordingClock};
+use self::clock::RecordingClock;
 pub use self::control::StopSignal;
 pub use self::error::RecordError;
 pub use self::mux::Container;
@@ -104,6 +104,7 @@ fn record_with(
             }
             Err(error) => return Err(error.into()),
         };
+    stream.set_frame_interval(Duration::from_secs(1) / recording.video.frames_per_second.max(1));
     let render_node = stream.render_node().map(Path::to_path_buf);
     let settings = VideoSettings {
         crop: crop(recording, stream.buffer_size()),
@@ -147,12 +148,14 @@ fn record_with(
     )?;
     pending.replay(&mut muxer)?;
     started();
-    let mut pacer = FramePacer::new(recording.video.frames_per_second);
     while !stop.is_raised() {
         match stream.next_frame(POLL_INTERVAL) {
             Ok(Some(frame)) => {
-                let timestamp = clock.microseconds_at(frame.presented_at);
-                if pacer.accept(timestamp) {
+                if settings
+                    .crop
+                    .is_changed_by(frame.damage, frame.pixels.size())
+                {
+                    let timestamp = clock.microseconds_at(frame.presented_at);
                     encoder.encode(&frame, timestamp, &mut muxer)?;
                 }
             }

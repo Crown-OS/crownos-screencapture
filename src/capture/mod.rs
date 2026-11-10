@@ -5,6 +5,7 @@
 
 mod error;
 mod frame;
+mod pacer;
 mod target;
 mod wayland;
 
@@ -15,6 +16,8 @@ pub use error::CaptureError;
 pub use frame::{
     BufferKind, CapturedFrame, DmabufFrame, FramePixels, PixelFormat, PlaneLayout, ShmFrame,
 };
+pub(crate) use pacer::FramePacer;
+pub use pacer::monotonic_now;
 pub use target::{CaptureTarget, CursorMode, OutputInfo, PixelRect, Region, WindowInfo};
 pub use wayland::WaylandCapture;
 
@@ -63,6 +66,10 @@ pub trait ScreenCapture {
 pub trait FrameStream {
     /// Waits up to `timeout` for the next frame; `None` when nothing changed on screen.
     fn next_frame(&mut self, timeout: Duration) -> Result<Option<CapturedFrame<'_>>, CaptureError>;
+
+    /// Asks for frames no more often than every `interval`, so the compositor renders no frame
+    /// that would be dropped.
+    fn set_frame_interval(&mut self, interval: Duration);
 
     /// The size of the buffers frames currently arrive in.
     fn buffer_size(&self) -> (u32, u32);
