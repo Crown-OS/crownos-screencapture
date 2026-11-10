@@ -100,6 +100,7 @@ impl VaapiInput {
                 "hwmap=mode=direct:derive_device=vaapi,\
                  scale_vaapi=w={width}:h={height}:format=nv12:out_range=tv:out_color_matrix=bt709"
             ),
+            0,
         )?;
         Ok(Self {
             width: frame.width,

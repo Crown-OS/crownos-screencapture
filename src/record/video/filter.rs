@@ -26,15 +26,21 @@ unsafe impl Send for FilterChain {}
 
 impl FilterChain {
     /// Builds `source → filters → sink` for frames of `format` at `width`×`height`, attached to
-    /// `frames` when the frames live on a hardware device.
+    /// `frames` when the frames live on a hardware device, running on up to `threads` threads
+    /// (0 lets FFmpeg pick).
     pub fn new(
         format: AVPixelFormat,
         width: u32,
         height: u32,
         frames: Option<&HardwareContext>,
         filters: &str,
+        threads: usize,
     ) -> Result<Self, RecordError> {
         let mut graph = filter::Graph::new();
+        let threads = i32::try_from(threads).map_err(std::io::Error::other)?;
+        // SAFETY: the graph is freshly allocated and owned here; FFmpeg requires the thread count
+        // to be set before the first filter is added, and none has been yet.
+        unsafe { (*graph.as_mut_ptr()).nb_threads = threads };
         add_source(&mut graph, format, width, height, frames)?;
         graph.add(&find("buffersink")?, SINK, "")?;
         graph.output(SOURCE, 0)?.input(SINK, 0)?.parse(filters)?;

@@ -1,8 +1,13 @@
+mod shm_input;
+
+use std::num::NonZero;
 use std::path::Path;
+use std::thread;
 
 use crownos_config::schema::VideoCodec;
 use ffmpeg_next::{Dictionary, encoder, format, frame};
 
+use self::shm_input::borrow_pixels;
 use super::filter::FilterChain;
 use super::{
     Crop, VideoBackend, VideoEncoder, VideoSettings, drain, ffmpeg_pixel, flush, open_encoder,
@@ -53,6 +58,14 @@ impl VideoBackend for SoftwareBackend {
     }
 }
 
+const MAX_CONVERSION_THREADS: usize = 8;
+
+/// Threads for the colour conversion: one per core, capped where more stop speeding swscale up
+/// and only compete with the encoder for cores.
+fn conversion_threads(cores: usize) -> usize {
+    cores.clamp(1, MAX_CONVERSION_THREADS)
+}
+
 fn encoder_for(codec: VideoCodec) -> (&'static str, Dictionary<'static>) {
     let mut options = Dictionary::new();
     let name = match codec {
@@ -96,6 +109,7 @@ impl SoftwareInput {
             &format!(
                 "crop={kept_width}:{kept_height}:{x}:{y},scale={width}:{height}:out_color_matrix=bt709:out_range=tv,format=yuv420p"
             ),
+            conversion_threads(thread::available_parallelism().map_or(1, NonZero::get)),
         )?;
         Ok(Self {
             width: frame.width,
@@ -141,15 +155,13 @@ impl VideoEncoder for SoftwareEncoder {
         if !self.input.accepts(shm) {
             self.input = SoftwareInput::new(shm, self.crop, self.output_size)?;
         }
-        let mut pixels = frame::Video::new(self.input.format, shm.width, shm.height);
-        let stride = pixels.stride(0);
-        for (target, row) in pixels
-            .data_mut(0)
-            .chunks_exact_mut(stride)
-            .zip(shm.rows(shm.full_rect()))
-        {
-            target[..row.len()].copy_from_slice(row);
-        }
+        // SAFETY: the mapping is read-only and wrapped with `AV_BUFFER_FLAG_READONLY`, so it is only
+        // ever read. `frame` borrows the capture stream for this whole call, and the stream re-attaches
+        // the next of its 4 ring slots before handing out this one, so the compositor neither writes
+        // into nor unmaps this slot while the graph is pushed and drained to EAGAIN below. Should an
+        // error leave the frame queued, the recording drops the encoder, and releasing the frame only
+        // runs a no-op free that never touches the mapping.
+        let mut pixels = unsafe { borrow_pixels(shm, self.input.format)? };
         pixels.set_pts(Some(timestamp));
         self.input.filters.push(&pixels)?;
         while self.input.filters.pull(&mut self.converted)? {
@@ -161,5 +173,105 @@ impl VideoEncoder for SoftwareEncoder {
 
     fn finish(&mut self, sink: &mut dyn PacketSink) -> Result<(), RecordError> {
         flush(&mut self.encoder, sink)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::File;
+    use std::io::Write;
+    use std::os::fd::OwnedFd;
+
+    use ffmpeg_next::ffi::{av_buffer_get_ref_count, av_buffer_ref, av_buffer_unref};
+    use rustix::fs::{MemfdFlags, memfd_create};
+
+    use super::*;
+    use crate::capture::PixelFormat;
+
+    const WIDTH: u32 = 64;
+    const HEIGHT: u32 = 48;
+    const STRIDE: u32 = WIDTH * 4 + 32;
+    const REGION: PixelRect = PixelRect {
+        x: 6,
+        y: 4,
+        width: 40,
+        height: 30,
+    };
+
+    fn patterned_frame() -> Result<ShmFrame, RecordError> {
+        let mut file = File::from(
+            memfd_create("software-test", MemfdFlags::CLOEXEC).map_err(std::io::Error::from)?,
+        );
+        let pattern: Vec<u8> = (0..STRIDE * HEIGHT)
+            .map(|index| (index * 7 % 251) as u8)
+            .collect();
+        file.write_all(&pattern)?;
+        Ok(ShmFrame::from_fd(
+            OwnedFd::from(file),
+            WIDTH,
+            HEIGHT,
+            STRIDE,
+            PixelFormat::Bgrx,
+        )?)
+    }
+
+    fn convert(shm: &ShmFrame, pixels: &frame::Video) -> Result<frame::Video, RecordError> {
+        let mut input =
+            SoftwareInput::new(shm, Crop::Region(REGION), (REGION.width, REGION.height))?;
+        let mut converted = frame::Video::empty();
+        input.filters.push(pixels)?;
+        assert!(input.filters.pull(&mut converted)?);
+        assert!(!input.filters.pull(&mut frame::Video::empty())?);
+        Ok(converted)
+    }
+
+    fn copied(shm: &ShmFrame) -> frame::Video {
+        let mut pixels = frame::Video::new(ffmpeg_pixel(shm.format), shm.width, shm.height);
+        let stride = pixels.stride(0);
+        for (target, row) in pixels
+            .data_mut(0)
+            .chunks_exact_mut(stride)
+            .zip(shm.rows(shm.full_rect()))
+        {
+            target[..row.len()].copy_from_slice(row);
+        }
+        pixels
+    }
+
+    fn planes(video: &frame::Video) -> Vec<&[u8]> {
+        (0..video.planes())
+            .flat_map(|plane| {
+                video
+                    .data(plane)
+                    .chunks(video.stride(plane))
+                    .take(video.plane_height(plane) as usize)
+                    .map(move |row| &row[..video.plane_width(plane) as usize])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn borrowed_pixels_convert_like_copied_ones_and_are_released() -> Result<(), RecordError> {
+        let shm = patterned_frame()?;
+        let expected = convert(&shm, &copied(&shm))?;
+        // SAFETY: `shm` outlives the conversion, which drains the graph before returning.
+        let borrowed = unsafe { shm_input::borrow_pixels(&shm, ffmpeg_pixel(shm.format))? };
+        // SAFETY: `borrowed` holds a valid buffer reference, which this takes a second one to.
+        let mut held = unsafe { av_buffer_ref((*borrowed.as_ptr()).buf[0]) };
+        let converted = convert(&shm, &borrowed)?;
+        assert_eq!(planes(&converted), planes(&expected));
+        // SAFETY: `held` is the reference taken above and is released exactly once.
+        unsafe {
+            assert_eq!(av_buffer_get_ref_count(held), 1);
+            av_buffer_unref(&mut held);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn conversion_threads_stay_between_one_and_the_cap() {
+        assert_eq!(conversion_threads(0), 1);
+        assert_eq!(conversion_threads(4), 4);
+        assert_eq!(conversion_threads(64), MAX_CONVERSION_THREADS);
     }
 }
