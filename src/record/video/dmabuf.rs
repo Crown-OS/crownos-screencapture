@@ -12,6 +12,9 @@ use crate::record::error::check;
 
 /// Maps `dmabuf` into `frames`, a pool of `format` frames derived from `drm_frames`, showing
 /// the `crop` part of it.
+///
+/// The file descriptor of `dmabuf` is only read while mapping: the mapped frame imports the
+/// buffer and keeps the GPU memory alive itself, so it may stay cached after `dmabuf` is closed.
 pub fn map_frame(
     dmabuf: &DmabufFrame,
     drm_frames: &HardwareContext,
