@@ -3,8 +3,8 @@ use std::ptr;
 
 use ffmpeg_next::ffi::{
     AVPixelFormat, AVRational, av_buffersink_get_hw_frames_ctx, av_buffersrc_parameters_alloc,
-    av_buffersrc_parameters_set, av_free, avfilter_get_by_name, avfilter_graph_alloc_filter,
-    avfilter_init_str,
+    av_buffersrc_parameters_set, av_buffersrc_write_frame, av_free, avfilter_get_by_name,
+    avfilter_graph_alloc_filter, avfilter_init_str,
 };
 use ffmpeg_next::{filter, frame};
 
@@ -49,20 +49,23 @@ impl FilterChain {
     }
 
     pub fn push(&mut self, input: &frame::Video) -> Result<(), RecordError> {
-        let mut source = self
-            .graph
-            .get(SOURCE)
-            .ok_or(RecordError::Ffmpeg(ffmpeg_next::Error::FilterNotFound))?;
+        let mut source = self.context(SOURCE)?;
         source.source().add(input)?;
+        Ok(())
+    }
+
+    /// Pushes a new reference to `input`, leaving `input` untouched.
+    pub fn push_reference(&mut self, input: &frame::Video) -> Result<(), RecordError> {
+        let mut source = self.context(SOURCE)?;
+        // SAFETY: the source belongs to this graph and only references the valid input frame.
+        let code = unsafe { av_buffersrc_write_frame(source.as_mut_ptr(), input.as_ptr()) };
+        check(code, "av_buffersrc_write_frame")?;
         Ok(())
     }
 
     /// The next converted frame, or `false` when the graph needs more input.
     pub fn pull(&mut self, output: &mut frame::Video) -> Result<bool, RecordError> {
-        let mut sink = self
-            .graph
-            .get(SINK)
-            .ok_or(RecordError::Ffmpeg(ffmpeg_next::Error::FilterNotFound))?;
+        let mut sink = self.context(SINK)?;
         match sink.sink().frame(output) {
             Ok(()) => Ok(true),
             Err(
@@ -75,12 +78,15 @@ impl FilterChain {
         }
     }
 
+    fn context(&mut self, name: &str) -> Result<filter::Context, RecordError> {
+        self.graph
+            .get(name)
+            .ok_or(RecordError::Ffmpeg(ffmpeg_next::Error::FilterNotFound))
+    }
+
     /// The hardware frame pool the graph outputs into.
     pub fn output_frames(&mut self) -> Result<HardwareContext, RecordError> {
-        let mut sink = self
-            .graph
-            .get(SINK)
-            .ok_or(RecordError::Ffmpeg(ffmpeg_next::Error::FilterNotFound))?;
+        let mut sink = self.context(SINK)?;
         // SAFETY: the sink belongs to a configured graph; the result is borrowed, so it is re-referenced.
         HardwareContext::share(unsafe { av_buffersink_get_hw_frames_ctx(sink.as_mut_ptr()) })
     }
