@@ -6,6 +6,7 @@
 
 mod filter;
 mod hardware;
+mod keyframes;
 mod rate;
 mod software;
 mod vaapi;
@@ -14,8 +15,9 @@ use std::path::Path;
 
 use crownos_config::schema::{RecordingQuality, VideoCodec};
 use ffmpeg_next::util::color;
-use ffmpeg_next::{Dictionary, Packet, Rational, codec, encoder, format};
+use ffmpeg_next::{Dictionary, Packet, Rational, codec, encoder, format, picture};
 
+pub use self::keyframes::KeyframeSchedule;
 pub use self::software::SoftwareBackend;
 pub use self::vaapi::VaapiBackend;
 use super::clock::RecordingClock;
@@ -81,11 +83,13 @@ pub trait VideoBackend {
 
 /// A running video encoder.
 pub trait VideoEncoder: EncodedStream {
-    /// Encodes `frame`, stamped `timestamp` microseconds into the recording.
+    /// Encodes `frame`, stamped `timestamp` microseconds into the recording, forcing a
+    /// keyframe when `picture` is `I`.
     fn encode(
         &mut self,
         frame: &CapturedFrame<'_>,
         timestamp: i64,
+        picture: picture::Type,
         sink: &mut dyn PacketSink,
     ) -> Result<(), RecordError>;
 
@@ -93,7 +97,8 @@ pub trait VideoEncoder: EncodedStream {
     fn finish(&mut self, sink: &mut dyn PacketSink) -> Result<(), RecordError>;
 }
 
-/// Opens `name` for `width`×`height` frames of `pixel` at constant quality, tagged as BT.709 limited range.
+/// Opens `name` for `width`×`height` frames of `pixel` at constant quality, tagged as BT.709
+/// limited range. Keyframes come from a [`KeyframeSchedule`]; the GOP is only a backstop.
 pub(crate) fn open_encoder(
     name: &'static str,
     pixel: format::Pixel,
@@ -110,7 +115,7 @@ pub(crate) fn open_encoder(
     video.set_format(pixel);
     video.set_time_base(Rational(1, RecordingClock::MICROSECONDS));
     video.set_frame_rate(Some(Rational(settings.frames_per_second as i32, 1)));
-    video.set_gop(settings.frames_per_second * 2);
+    video.set_gop(settings.frames_per_second * 10);
     video.set_max_b_frames(0);
     video.set_colorspace(color::Space::BT709);
     video.set_color_primaries(color::Primaries::BT709);

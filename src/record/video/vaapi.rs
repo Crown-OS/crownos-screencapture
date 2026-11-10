@@ -6,7 +6,7 @@ use std::path::Path;
 
 use crownos_config::schema::VideoCodec;
 use ffmpeg_next::ffi::AVHWDeviceType;
-use ffmpeg_next::{Dictionary, encoder, format, frame};
+use ffmpeg_next::{Dictionary, encoder, format, frame, picture};
 
 use self::input::VaapiInput;
 use super::hardware::HardwareContext;
@@ -103,6 +103,7 @@ impl VideoEncoder for VaapiEncoder {
         &mut self,
         frame: &CapturedFrame<'_>,
         timestamp: i64,
+        picture: picture::Type,
         sink: &mut dyn PacketSink,
     ) -> Result<(), RecordError> {
         let FramePixels::Gpu(dmabuf) = frame.pixels else {
@@ -117,7 +118,7 @@ impl VideoEncoder for VaapiEncoder {
                 self.output_size,
             )?;
         }
-        self.input.push(frame, dmabuf, timestamp)?;
+        self.input.push(frame, dmabuf, timestamp, picture)?;
         while self.input.filters.pull(&mut self.converted)? {
             self.encoder.send_frame(&self.converted)?;
             drain(&mut self.encoder, sink)?;
