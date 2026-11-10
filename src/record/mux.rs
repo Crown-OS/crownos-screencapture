@@ -30,15 +30,16 @@ impl Container {
         }
     }
 
-    /// Muxer options: MP4 is written as fragments so a crash keeps everything up to the last
-    /// keyframe, with the moov held until the first fragment so tracks keep their start offsets.
+    /// Muxer options: MP4 is written in fragments cut at every keyframe and at least every two
+    /// seconds, so a crash loses no more than the last fragment.
     fn header_options(self) -> Dictionary<'static> {
         let mut options = Dictionary::new();
         if self == Self::Mp4 {
             options.set(
                 "movflags",
-                "frag_keyframe+empty_moov+default_base_moof+delay_moov+write_colr",
+                "frag_keyframe+empty_moov+default_base_moof+write_colr",
             );
+            options.set("frag_duration", "2000000");
         }
         options
     }
