@@ -107,6 +107,11 @@ impl ShmFrame {
         self.memory.len()
     }
 
+    /// The whole mapping, `stride * height` bytes.
+    pub fn bytes(&self) -> &[u8] {
+        &self.memory
+    }
+
     /// The pixel bytes from the first pixel of `rect` to the last, rows `stride` apart.
     pub fn bytes_from(&self, rect: PixelRect) -> &[u8] {
         let start =
