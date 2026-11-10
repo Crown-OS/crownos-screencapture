@@ -8,6 +8,7 @@ mod filter;
 mod hardware;
 mod software;
 mod vaapi;
+mod vulkan;
 
 use std::path::Path;
 
@@ -16,6 +17,7 @@ use ffmpeg_next::{Dictionary, Packet, Rational, codec, encoder, format};
 
 pub use self::software::SoftwareBackend;
 pub use self::vaapi::VaapiBackend;
+pub use self::vulkan::VulkanBackend;
 use super::clock::RecordingClock;
 use super::{EncodedStream, PacketSink, RecordError};
 use crate::capture::{BufferKind, CapturedFrame, PixelFormat, PixelRect};
