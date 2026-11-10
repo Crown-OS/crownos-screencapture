@@ -6,12 +6,14 @@
 
 mod filter;
 mod hardware;
+mod rate;
 mod software;
 mod vaapi;
 
 use std::path::Path;
 
 use crownos_config::schema::{RecordingQuality, VideoCodec};
+use ffmpeg_next::util::color;
 use ffmpeg_next::{Dictionary, Packet, Rational, codec, encoder, format};
 
 pub use self::software::SoftwareBackend;
@@ -81,23 +83,7 @@ pub trait VideoEncoder: EncodedStream {
     fn finish(&mut self, sink: &mut dyn PacketSink) -> Result<(), RecordError>;
 }
 
-/// Bits per pixel per frame for each quality step.
-fn bits_per_pixel(quality: RecordingQuality) -> f64 {
-    match quality {
-        RecordingQuality::Low => 0.04,
-        RecordingQuality::Medium => 0.08,
-        RecordingQuality::High => 0.15,
-        RecordingQuality::Lossless => 0.4,
-    }
-}
-
-pub(crate) fn bit_rate(width: u32, height: u32, settings: &VideoSettings) -> usize {
-    let pixels_per_second =
-        f64::from(width) * f64::from(height) * f64::from(settings.frames_per_second);
-    (pixels_per_second * bits_per_pixel(settings.quality)) as usize
-}
-
-/// Opens `name` for `width`×`height` frames of `pixel` with the shared rate control.
+/// Opens `name` for `width`×`height` frames of `pixel` at constant quality, tagged as BT.709 limited range.
 pub(crate) fn open_encoder(
     name: &'static str,
     pixel: format::Pixel,
@@ -105,11 +91,10 @@ pub(crate) fn open_encoder(
     height: u32,
     settings: &VideoSettings,
     configure: impl FnOnce(&mut encoder::video::Video),
-    options: Dictionary<'_>,
+    mut options: Dictionary<'_>,
 ) -> Result<encoder::Video, RecordError> {
     let codec = encoder::find_by_name(name).ok_or(RecordError::NoEncoder(name))?;
     let mut video = codec::Context::new_with_codec(codec).encoder().video()?;
-    let rate = bit_rate(width, height, settings);
     video.set_width(width);
     video.set_height(height);
     video.set_format(pixel);
@@ -117,10 +102,13 @@ pub(crate) fn open_encoder(
     video.set_frame_rate(Some(Rational(settings.frames_per_second as i32, 1)));
     video.set_gop(settings.frames_per_second * 2);
     video.set_max_b_frames(0);
-    video.set_bit_rate(rate);
-    video.set_max_bit_rate(rate * 3 / 2);
+    video.set_colorspace(color::Space::BT709);
+    video.set_color_primaries(color::Primaries::BT709);
+    video.set_color_transfer_characteristic(color::TransferCharacteristic::BT709);
+    video.set_color_range(color::Range::MPEG);
     video.set_flags(codec::Flags::GLOBAL_HEADER);
     configure(&mut video);
+    rate::add_constant_quality(&mut options, name, settings.quality)?;
     Ok(video.open_with(options)?)
 }
 
@@ -208,19 +196,5 @@ mod tests {
                 height: 766
             }
         );
-    }
-
-    #[test]
-    fn scales_bit_rate_with_quality() {
-        let settings = |quality| VideoSettings {
-            codec: VideoCodec::H264,
-            quality,
-            frames_per_second: 60,
-            crop: Crop::Full,
-        };
-        let low = bit_rate(1920, 1080, &settings(RecordingQuality::Low));
-        let high = bit_rate(1920, 1080, &settings(RecordingQuality::High));
-        assert!(low < high);
-        assert!((4_000_000..8_000_000).contains(&low));
     }
 }
