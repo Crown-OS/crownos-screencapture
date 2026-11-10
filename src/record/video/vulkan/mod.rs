@@ -63,12 +63,8 @@ impl VideoBackend for VulkanBackend {
             options,
         )?;
         Ok(Box::new(VulkanEncoder {
-            drm,
-            vulkan,
             input,
             encoder,
-            crop: settings.crop,
-            output_size,
             converted: frame::Video::empty(),
         }))
     }
@@ -102,12 +98,8 @@ fn converted_rect(crop: Crop, width: u32, height: u32) -> PixelRect {
 }
 
 struct VulkanEncoder {
-    drm: HardwareContext,
-    vulkan: HardwareContext,
     input: VulkanInput,
     encoder: encoder::Video,
-    crop: Crop,
-    output_size: (u32, u32),
     converted: frame::Video,
 }
 
@@ -134,8 +126,7 @@ impl VideoEncoder for VulkanEncoder {
             return Err(RecordError::WrongBuffer);
         };
         if !self.input.accepts(dmabuf) {
-            self.input =
-                VulkanInput::new(&self.drm, &self.vulkan, dmabuf, self.crop, self.output_size)?;
+            return Err(RecordError::Resized("Vulkan"));
         }
         self.input.push(frame, dmabuf, timestamp, picture)?;
         while self.input.filters.pull(&mut self.converted)? {
