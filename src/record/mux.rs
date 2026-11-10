@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crownos_config::schema::VideoContainer;
-use ffmpeg_next::{Packet, Rational, format};
+use ffmpeg_next::{Dictionary, Packet, Rational, format};
 
 use super::{EncodedStream, PacketSink, RecordError};
 
@@ -28,6 +28,19 @@ impl Container {
             Self::Matroska => "mkv",
             Self::OggOpus => "opus",
         }
+    }
+
+    /// Muxer options: MP4 is written as fragments so a crash keeps everything up to the last
+    /// keyframe, with the moov held until the first fragment so tracks keep their start offsets.
+    fn header_options(self) -> Dictionary<'static> {
+        let mut options = Dictionary::new();
+        if self == Self::Mp4 {
+            options.set(
+                "movflags",
+                "frag_keyframe+empty_moov+default_base_moof+delay_moov+write_colr",
+            );
+        }
+        options
     }
 }
 
@@ -77,7 +90,7 @@ impl Muxer {
         };
         let video = add(video)?;
         let audio = add(audio)?;
-        output.write_header()?;
+        output.write_header_with(container.header_options())?;
         Ok(Self {
             output,
             video,

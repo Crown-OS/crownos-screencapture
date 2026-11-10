@@ -8,15 +8,18 @@ use pw::spa::param::ParamType;
 use pw::spa::param::audio::{AudioFormat, AudioInfoRaw};
 use pw::spa::pod::serialize::PodSerializer;
 use pw::spa::pod::{Object, Pod, Value};
-use pw::spa::utils::{Direction, SpaTypes};
-use pw::stream::{StreamBox, StreamFlags};
-use rtrb::{Producer, RingBuffer};
+use pw::spa::utils::{Direction, Fraction, SpaTypes};
+use pw::stream::{Stream, StreamBox, StreamFlags};
 
-use super::{AudioSource, CHANNELS, SAMPLE_RATE};
+use super::source::{SourceReader, SourceWriter, timed_source};
+use super::{CHANNELS, NANOSECONDS, SAMPLE_RATE, monotonic_now, nanoseconds};
 use crate::record::RecordError;
 
-/// One second of interleaved stereo per source.
-const RING_CAPACITY: usize = SAMPLE_RATE as usize * CHANNELS;
+/// One second of frames per source.
+const RING_FRAMES: usize = SAMPLE_RATE as usize;
+/// Captured buffers a source may queue, enough for a second at a 64-frame quantum.
+const RING_RUNS: usize = 1024;
+const FRAME_BYTES: usize = CHANNELS * size_of::<f32>();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureNode {
@@ -55,13 +58,10 @@ pub struct PipeWireCapture {
 }
 
 impl PipeWireCapture {
-    pub fn start(nodes: &[CaptureNode]) -> Result<(Self, Vec<Box<dyn AudioSource>>), RecordError> {
-        let (producers, sources): (Vec<_>, Vec<Box<dyn AudioSource>>) = nodes
+    pub fn start(nodes: &[CaptureNode]) -> Result<(Self, Vec<SourceReader>), RecordError> {
+        let (writers, sources) = nodes
             .iter()
-            .map(|_| {
-                let (producer, consumer) = RingBuffer::new(RING_CAPACITY);
-                (producer, Box::new(consumer) as Box<dyn AudioSource>)
-            })
+            .map(|_| timed_source(RING_FRAMES, RING_RUNS))
             .unzip();
         let (quit, quit_receiver) = pw::channel::channel();
         let (ready_sender, ready) = mpsc::sync_channel(1);
@@ -69,7 +69,7 @@ impl PipeWireCapture {
         let thread = thread::Builder::new()
             .name("pipewire".into())
             .spawn(move || {
-                if let Err(error) = run_loop(&nodes, producers, quit_receiver, &ready_sender) {
+                if let Err(error) = run_loop(&nodes, writers, quit_receiver, &ready_sender) {
                     let _ = ready_sender.send(Err(error));
                 }
             })?;
@@ -96,7 +96,7 @@ impl Drop for PipeWireCapture {
 
 fn run_loop(
     nodes: &[CaptureNode],
-    producers: Vec<Producer<f32>>,
+    writers: Vec<SourceWriter>,
     quit: pw::channel::Receiver<()>,
     ready: &mpsc::SyncSender<Result<(), pw::Error>>,
 ) -> Result<(), pw::Error> {
@@ -107,28 +107,26 @@ fn run_loop(
     let format = format_pod()?;
     let mut streams = Vec::with_capacity(nodes.len());
     let mut listeners = Vec::with_capacity(nodes.len());
-    for (node, producer) in nodes.iter().zip(producers) {
+    for (node, writer) in nodes.iter().zip(writers) {
         let stream = StreamBox::new(&core, node.stream_name(), node.properties())?;
         let listener = stream
-            .add_local_listener_with_user_data(producer)
-            .process(|stream, producer| {
+            .add_local_listener_with_user_data(writer)
+            .process(|stream, writer| {
                 let Some(mut buffer) = stream.dequeue_buffer() else {
                     return;
                 };
                 let Some(data) = buffer.datas_mut().first_mut() else {
                     return;
                 };
-                let length = data.chunk().size() as usize;
-                let Some(bytes) = data.data() else {
+                let (offset, size) = (data.chunk().offset() as usize, data.chunk().size() as usize);
+                let Some(bytes) = data.data().and_then(|bytes| bytes.get(offset..)) else {
                     return;
                 };
-                let samples = bytes[..length.min(bytes.len())]
-                    .chunks_exact(size_of::<f32>())
-                    .map(|sample| f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]));
-                let room = producer.slots().min(length / size_of::<f32>());
-                if let Ok(chunk) = producer.write_chunk_uninit(room) {
-                    chunk.fill_from_iter(samples);
-                }
+                let bytes = &bytes[..size.min(bytes.len())];
+                writer.push(
+                    first_frame_captured_at(stream, bytes.len() / FRAME_BYTES),
+                    bytes,
+                );
             })
             .register()?;
         let mut parameters = [Pod::from_bytes(&format).ok_or(pw::Error::CreationFailed)?];
@@ -150,6 +148,29 @@ fn run_loop(
     Ok(())
 }
 
+/// When the first of `frames` frames dequeued this cycle was captured, on `CLOCK_MONOTONIC`: by
+/// the graph clock when the stream reports it, otherwise by when the buffer arrived.
+fn first_frame_captured_at(stream: &Stream, frames: usize) -> i64 {
+    stream
+        .time()
+        .ok()
+        .and_then(|time| captured_at(time.now(), time.delay(), time.rate()))
+        .unwrap_or_else(|| {
+            nanoseconds(monotonic_now()) - frames as i64 * NANOSECONDS / i64::from(SAMPLE_RATE)
+        })
+}
+
+/// The capture time of the first frame delivered in the graph cycle at `now_ns`, whose `delay`
+/// ticks of `rate` include the quantum the device spent capturing it.
+fn captured_at(now_ns: i64, delay: i64, rate: Fraction) -> Option<i64> {
+    if now_ns <= 0 || rate.num == 0 || rate.denom == 0 {
+        return None;
+    }
+    let delay_ns = i128::from(delay.max(0)) * i128::from(NANOSECONDS) * i128::from(rate.num)
+        / i128::from(rate.denom);
+    Some(now_ns - delay_ns as i64)
+}
+
 /// Interleaved 32-bit float stereo at 48 kHz, which PipeWire converts any device to.
 fn format_pod() -> Result<Vec<u8>, pw::Error> {
     let mut info = AudioInfoRaw::new();
@@ -168,4 +189,37 @@ fn format_pod() -> Result<Vec<u8>, pw::Error> {
     PodSerializer::serialize(Cursor::new(Vec::new()), &Value::Object(object))
         .map(|(cursor, _)| cursor.into_inner())
         .map_err(|_| pw::Error::CreationFailed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PER_SAMPLE: Fraction = Fraction {
+        num: 1,
+        denom: SAMPLE_RATE,
+    };
+
+    #[test]
+    fn subtracts_graph_delay_from_cycle_time() {
+        assert_eq!(
+            captured_at(NANOSECONDS, 480, PER_SAMPLE),
+            Some(NANOSECONDS - 10_000_000)
+        );
+    }
+
+    #[test]
+    fn ignores_negative_delay() {
+        assert_eq!(
+            captured_at(NANOSECONDS, -480, PER_SAMPLE),
+            Some(NANOSECONDS)
+        );
+    }
+
+    #[test]
+    fn reports_nothing_without_a_graph_clock() {
+        let unset = Fraction { num: 0, denom: 0 };
+        assert_eq!(captured_at(NANOSECONDS, 480, unset), None);
+        assert_eq!(captured_at(0, 480, PER_SAMPLE), None);
+    }
 }
