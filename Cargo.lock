@@ -533,7 +533,7 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "crownconfig"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "crownos-config",
  "serde",
@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "crownui"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "geometry",
  "gesture",
@@ -922,11 +922,11 @@ checksum = "1d758ba1b47b00caf47f24925c0074ecb20d6dfcffe7f6d53395c0465674841a"
 
 [[package]]
 name = "geometry"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "gesture"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "geometry",
  "input",
@@ -964,7 +964,7 @@ dependencies = [
 
 [[package]]
 name = "graphics"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "geometry",
  "rustc-hash",
@@ -1028,7 +1028,7 @@ checksum = "65b27460c2c92b037f3f94c538ed9a3342f3fdf923606781629ccb35f82d042a"
 
 [[package]]
 name = "impeller"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "ash",
  "geometry",
@@ -1087,7 +1087,7 @@ dependencies = [
 
 [[package]]
 name = "input"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "geometry",
  "thiserror 2.0.21",
@@ -1095,7 +1095,7 @@ dependencies = [
 
 [[package]]
 name = "inspect"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
@@ -1170,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "layouting"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "geometry",
 ]
@@ -1318,7 +1318,7 @@ dependencies = [
 
 [[package]]
 name = "motion"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "geometry",
 ]
@@ -1603,7 +1603,7 @@ checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
 name = "reactive"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "slotmap",
  "smallvec",
@@ -1686,7 +1686,7 @@ checksum = "fae8ee26b0371a29a77d2b2d6b3ae13aa81def6f9bf1b1b92a32d279a5e709b7"
 
 [[package]]
 name = "runtime"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "crossbeam-channel",
  "geometry",
@@ -1745,7 +1745,7 @@ checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
 
 [[package]]
 name = "semantics"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "geometry",
  "input",
@@ -1987,7 +1987,7 @@ dependencies = [
 
 [[package]]
 name = "taffy-layout"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "geometry",
  "layouting",
@@ -2327,7 +2327,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "view"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "geometry",
  "gesture",
@@ -2550,7 +2550,7 @@ dependencies = [
 
 [[package]]
 name = "widgets"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "blinc_icons",
  "crownconfig",
@@ -2579,7 +2579,7 @@ dependencies = [
 
 [[package]]
 name = "windowing"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "bitflags",
  "crownos-protocols",
