@@ -256,6 +256,7 @@ mod tests {
         assert_eq!(Arc::strong_count(&shm), 2);
         let converted = convert(&shm, &shared)?;
         assert_eq!(planes(&converted), planes(&expected));
+        drop(shared);
         assert_eq!(Arc::strong_count(&shm), 1);
         Ok(())
     }
