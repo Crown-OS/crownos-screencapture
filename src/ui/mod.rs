@@ -8,8 +8,8 @@ mod tile;
 mod toolbar;
 
 pub use launch::{CaptureMode, Launch};
-pub use overlay::run_overlay;
-pub use toolbar::run_toolbar;
+pub use overlay::{Backdrop, overlay_config, overlay_root, run_overlay};
+pub use toolbar::{run_toolbar, toolbar_config, toolbar_root};
 
 use crownui::ext::{Key, Keybind, Modifiers, NamedKey};
 use crownui::prelude::{Cx, Listeners, Styled, View, vstack};

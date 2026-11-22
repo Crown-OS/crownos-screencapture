@@ -19,25 +19,28 @@ const MINIMUM_SIZE: f32 = 4.0;
 const CANCELLED: i32 = 1;
 
 /// A frozen frame decoded for display.
-struct Backdrop {
-    width: u32,
-    height: u32,
-    rgba: Vec<u8>,
+pub struct Backdrop {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
 }
 
 /// Covers the focused output, lets the user drag out a region, prints it and exits.
 pub fn run_overlay(arguments: SelectAreaArgs) -> Result<()> {
     let backdrop = backdrop(&arguments)?;
+    crownui::run(overlay_root(backdrop), overlay_config()).context("the selection overlay stopped")
+}
+
+pub fn overlay_config() -> AppConfig {
     let layer = LayerOptions::new(NAMESPACE, Anchor::ALL)
         .layer(Layer::Overlay)
         .exclusive_zone(-1)
         .keyboard(KeyboardInteractivity::Exclusive);
-    let config = AppConfig::new("Select area")
+    AppConfig::new("Select area")
         .app_id(NAMESPACE)
         .clear_color(TRANSPARENT)
         .accessibility(false)
-        .layer(layer);
-    crownui::run(root(backdrop), config).context("the selection overlay stopped")
+        .layer(layer)
 }
 
 fn backdrop(arguments: &SelectAreaArgs) -> Result<Option<Backdrop>> {
@@ -63,7 +66,8 @@ fn backdrop(arguments: &SelectAreaArgs) -> Result<Option<Backdrop>> {
     }))
 }
 
-fn root(backdrop: Option<Backdrop>) -> impl View {
+/// The selection overlay, over `backdrop` when the frame was frozen.
+pub fn overlay_root(backdrop: Option<Backdrop>) -> impl View {
     let mut backdrop = backdrop;
     component(move |cx| {
         let drag = cx.signal(None::<(Point, Point)>);
