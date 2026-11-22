@@ -149,7 +149,7 @@ impl SourceReader {
     }
 
     fn repeat_last_frame(&self, output: &mut [f32], frames: usize) {
-        for frame in output.chunks_exact_mut(CHANNELS).take(frames) {
+        for frame in output.as_chunks_mut::<CHANNELS>().0.iter_mut().take(frames) {
             for (mixed, sample) in frame.iter_mut().zip(self.last_frame) {
                 *mixed += sample;
             }

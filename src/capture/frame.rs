@@ -156,7 +156,7 @@ impl ShmFrame {
     pub fn to_rgba(&self) -> Vec<u8> {
         let mut rgba = Vec::with_capacity(self.width as usize * self.height as usize * 4);
         for row in self.rows(self.full_rect()) {
-            for pixel in row.chunks_exact(4) {
+            for pixel in row.as_chunks::<4>().0 {
                 let (red, blue) = if self.format.is_bgr() {
                     (pixel[2], pixel[0])
                 } else {

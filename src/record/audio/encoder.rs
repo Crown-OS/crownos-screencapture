@@ -50,7 +50,9 @@ impl OpusEncoder {
         let count = self.frame_samples() * CHANNELS;
         let bytes = self.frame.data_mut(0);
         for (target, sample) in bytes
-            .chunks_exact_mut(size_of::<f32>())
+            .as_chunks_mut::<{ size_of::<f32>() }>()
+            .0
+            .iter_mut()
             .zip(samples.iter().take(count))
         {
             target.copy_from_slice(&sample.to_ne_bytes());

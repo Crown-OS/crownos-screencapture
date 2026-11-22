@@ -34,7 +34,9 @@ impl ImageEncoder for PngEncoder {
         let mut row_bytes = vec![0; rect.width as usize * channels];
         for row in frame.rows(rect) {
             for (pixel, target) in row
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .zip(row_bytes.chunks_exact_mut(channels))
             {
                 let (red, blue) = if frame.format.is_bgr() {

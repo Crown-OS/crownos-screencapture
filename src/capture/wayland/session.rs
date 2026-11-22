@@ -109,8 +109,10 @@ impl Dispatch2<ExtImageCopyCaptureSessionV1, State> for SessionData {
             ext_image_copy_capture_session_v1::Event::DmabufFormat { format, modifiers } => {
                 if let Some(format) = PixelFormat::from_drm_fourcc(format) {
                     let modifiers = modifiers
-                        .chunks_exact(8)
-                        .filter_map(|bytes| bytes.try_into().ok().map(u64::from_ne_bytes))
+                        .as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|bytes| u64::from_ne_bytes(*bytes))
                         .collect();
                     pending.dmabuf_formats.push((format, modifiers));
                 }
