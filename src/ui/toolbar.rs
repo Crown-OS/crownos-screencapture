@@ -37,6 +37,10 @@ struct Targets {
 }
 
 pub fn run_toolbar(outputs: Vec<OutputInfo>, windows: Vec<WindowInfo>) -> Result<()> {
+    crownui::run(toolbar_root(outputs, windows), toolbar_config()).context("the toolbar stopped")
+}
+
+pub fn toolbar_config() -> AppConfig {
     let layer = LayerOptions::new(NAMESPACE, Anchor::TOP)
         .layer(Layer::Overlay)
         .width(LayerExtent::Fixed(SURFACE_WIDTH))
@@ -46,17 +50,17 @@ pub fn run_toolbar(outputs: Vec<OutputInfo>, windows: Vec<WindowInfo>) -> Result
             ..LayerMargin::default()
         })
         .keyboard(KeyboardInteractivity::Exclusive);
-    let config = AppConfig::new("Screenshot")
+    AppConfig::new("Screenshot")
         .app_id(NAMESPACE)
         .size(SURFACE_WIDTH, SURFACE_HEIGHT)
         .clear_color(TRANSPARENT)
         .font(kit::inter_font().to_vec(), Some(kit::INTER_FAMILY))
-        .layer(layer);
-    let targets = Rc::new(Targets { outputs, windows });
-    crownui::run(root(targets), config).context("the toolbar stopped")
+        .layer(layer)
 }
 
-fn root(targets: Rc<Targets>) -> impl View {
+/// The toolbar offering `outputs` and `windows` as capture targets.
+pub fn toolbar_root(outputs: Vec<OutputInfo>, windows: Vec<WindowInfo>) -> impl View {
+    let targets = Rc::new(Targets { outputs, windows });
     component(move |cx| {
         provide_theme(cx, Theme::default());
         let mode = cx.signal(CaptureMode::Screenshot.index());

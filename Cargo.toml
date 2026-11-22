@@ -100,6 +100,10 @@ zbus = { version = "5.19", default-features = false, features = [
   "blocking-api",
 ], optional = true }
 
+[dev-dependencies]
+capture = { path = "../crownui/capture" }
+crowntest = { path = "../crownui/crowntest" }
+
 [patch."https://github.com/crown-os/crownos-ipc"]
 crownos-ipc = { path = "../crownos-ipc" }
 
