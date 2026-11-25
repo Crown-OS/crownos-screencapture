@@ -289,7 +289,7 @@ dependencies = [
  "regex",
  "rustc-hash",
  "shlex 2.0.1",
- "syn 3.0.9",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -563,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "crownos-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dirs",
  "notify",
